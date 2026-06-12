@@ -13,6 +13,7 @@ from app.db import (
 )
 
 router = APIRouter()
+HIGHER_TIMEFRAMES = {"1H", "4H"}
 
 
 def fallback_latest_market_data():
@@ -61,9 +62,9 @@ def fallback_latest_market_data():
 
 
 @router.get("/latest")
-def latest_market_data():
+def latest_market_data(timeframe: str = Query("1m")):
     try:
-        snapshot = fetch_latest_market_snapshot()
+        snapshot = fetch_latest_market_snapshot(timeframe=timeframe)
         if {"mcx", "forex"}.issubset(snapshot):
             return snapshot
     except DatabaseUnavailable:
@@ -86,6 +87,12 @@ def market_candles(
             timeframe=timeframe,
             limit=limit,
         )
+        if not candles and timeframe in HIGHER_TIMEFRAMES:
+            return {
+                "status": "EMPTY",
+                "message": "Insufficient candles for selected timeframe",
+                "candles": [],
+            }
         return {"status": "DB", "candles": candles}
     except DatabaseUnavailable:
         latest = fallback_latest_market_data()

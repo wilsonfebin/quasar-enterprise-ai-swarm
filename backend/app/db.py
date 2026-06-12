@@ -193,7 +193,7 @@ def insert_market_candle(candle):
     return format_candle(inserted)
 
 
-def fetch_latest_market_snapshot():
+def fetch_latest_market_snapshot(timeframe="1m"):
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -203,11 +203,12 @@ def fetch_latest_market_snapshot():
                     open, high, low, close, volume
                 FROM market_candles
                 WHERE (market_type, instrument, timeframe) IN (
-                    ('MCX', 'NATURALGAS', '1m'),
-                    ('FOREX', 'XAUUSD', '1m')
+                    ('MCX', 'NATURALGAS', %s),
+                    ('FOREX', 'XAUUSD', %s)
                 )
                 ORDER BY market_type, instrument, timeframe, ts DESC, id DESC
-                """
+                """,
+                (timeframe, timeframe),
             )
             candles = cursor.fetchall()
 

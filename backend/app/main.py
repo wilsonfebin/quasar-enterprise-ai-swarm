@@ -6,7 +6,7 @@ from app.api.agent_routes import router as agent_router
 from app.api.log_routes import router as log_router
 from app.api.market_routes import router as market_router
 from app.api.smc_routes import router as smc_router
-from app.data.ingestion_service import append_log
+from app.data.ingestion_service import append_log, refresh_market_structure
 from app.db import DatabaseUnavailable, seed_mock_market_data
 
 app = FastAPI(title="Quasar Enterprise AI Delivery Swarm")
@@ -34,6 +34,7 @@ def seed_day_1_mock_data():
 
     try:
         seed_mock_market_data()
+        refresh_market_structure()
     except DatabaseUnavailable as exc:
         print(f"Skipping Day-1 DB seed: {exc}")
 

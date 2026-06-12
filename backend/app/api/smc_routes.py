@@ -4,6 +4,7 @@ from app.api.market_routes import fallback_latest_market_data
 from app.db import DatabaseUnavailable, fetch_smc_labels
 
 router = APIRouter()
+HIGHER_TIMEFRAMES = {"1H", "4H"}
 
 
 @router.get("/labels")
@@ -23,6 +24,12 @@ def smc_labels(
             timeframe=timeframe,
             limit=limit,
         )
+        if not labels and timeframe in HIGHER_TIMEFRAMES:
+            return {
+                "status": "EMPTY",
+                "message": "Insufficient candles for selected timeframe",
+                "labels": [],
+            }
         return {"status": "DB", "labels": labels}
     except DatabaseUnavailable:
         latest = fallback_latest_market_data()

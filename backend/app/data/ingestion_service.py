@@ -7,7 +7,9 @@ from app.data.twelvedata_client import (
     TwelveDataCredentialsMissing,
 )
 from app.data.zerodha_client import ZerodhaClient, ZerodhaCredentialsMissing
+from app.data.candle_aggregator import aggregate_1m_candles
 from app.db import insert_market_candle
+from app.strategy.smc_label_engine import generate_smc_labels
 
 LOG_DIR = Path("logs")
 
@@ -48,6 +50,23 @@ def save_ingested_candle(candle):
     return inserted
 
 
+def refresh_market_structure():
+    aggregate_result = aggregate_1m_candles()
+    label_result = generate_smc_labels()
+    append_log(
+        "backend.log",
+        (
+            "Refreshed market structure "
+            f"aggregated={aggregate_result['inserted_count']} "
+            f"labels={label_result['inserted_count']}"
+        ),
+    )
+    return {
+        "aggregation": aggregate_result,
+        "labels": label_result,
+    }
+
+
 def build_mock_candles():
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     minute_offset = now.minute % 10
@@ -82,12 +101,14 @@ def build_mock_candles():
 
 def ingest_mock_candles():
     inserted = [save_ingested_candle(candle) for candle in build_mock_candles()]
+    market_structure = refresh_market_structure()
     append_log("mcx_live.log", "Mock MCX NATURALGAS candle ingested")
     append_log("forex_live.log", "Mock Forex XAUUSD candle ingested")
     return {
         "status": "ok",
         "mode": "mock",
         "inserted": inserted,
+        "market_structure": market_structure,
     }
 
 
@@ -101,6 +122,7 @@ def ingest_twelvedata_forex():
     try:
         candle = TwelveDataClient().fetch_latest_forex_candle()
         inserted = save_ingested_candle(candle)
+        market_structure = refresh_market_structure()
     except TwelveDataCredentialsMissing as exc:
         message = str(exc)
         append_log("forex_live.log", message)
@@ -113,7 +135,12 @@ def ingest_twelvedata_forex():
         return {"status": "error", "message": message}
 
     append_log("forex_live.log", f"TwelveData Forex candle ingested id={inserted['id']}")
-    return {"status": "ok", "source": "TWELVEDATA", "inserted": inserted}
+    return {
+        "status": "ok",
+        "source": "TWELVEDATA",
+        "inserted": inserted,
+        "market_structure": market_structure,
+    }
 
 
 def ingest_zerodha_mcx():
