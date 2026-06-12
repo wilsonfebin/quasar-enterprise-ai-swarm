@@ -132,16 +132,14 @@ def seed_mock_market_data():
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                DELETE FROM smc_labels
-                WHERE metadata->>'source' = 'day_1_seed'
-                """
-            )
-            cursor.execute(
-                """
-                DELETE FROM market_candles
+                SELECT COUNT(*)
+                FROM market_candles
                 WHERE source IN ('MOCK_MCX', 'MOCK_FOREX')
                 """
             )
+            if cursor.fetchone()[0] > 0:
+                return
+
             cursor.executemany(
                 """
                 INSERT INTO market_candles (
@@ -169,6 +167,30 @@ def seed_mock_market_data():
                 [{**label, "metadata": Json(label["metadata"])} for label in labels],
             )
         connection.commit()
+
+
+def insert_market_candle(candle):
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO market_candles (
+                    instrument, market_type, source, timeframe, ts,
+                    open, high, low, close, volume
+                )
+                VALUES (
+                    %(instrument)s, %(market_type)s, %(source)s, %(timeframe)s, %(ts)s,
+                    %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s
+                )
+                RETURNING id, instrument, market_type, source, timeframe, ts,
+                    open, high, low, close, volume
+                """,
+                candle,
+            )
+            inserted = cursor.fetchone()
+        connection.commit()
+
+    return format_candle(inserted)
 
 
 def fetch_latest_market_snapshot():
@@ -199,7 +221,7 @@ def fetch_latest_market_snapshot():
                     connection=connection,
                 )
                 key = "mcx" if candle["market_type"] == "MCX" else "forex"
-                snapshot[key] = format_market_card(candle, labels, status="DB_SEEDED")
+                snapshot[key] = format_market_card(candle, labels, status="DB")
 
             return snapshot
 

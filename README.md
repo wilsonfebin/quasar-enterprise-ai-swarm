@@ -20,10 +20,18 @@ Phase 1 Complete
 
 ## Run
 
-docker compose up --build
+docker compose up --build -d
 
 UI:
-http://localhost:8502
+http://localhost:8601
 
 Backend:
 http://localhost:8001/docs
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and populate credentials.
+
+```bash
+docker compose up --build -d
+```

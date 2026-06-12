@@ -2,16 +2,16 @@ services:
   db:
     image: timescale/timescaledb:latest-pg16
     environment:
-      POSTGRES_DB: quasar_swarm
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-quasar_swarm}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5433:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d quasar_swarm"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,7 +24,11 @@ services:
       - ./backend:/app
       - ./logs:/app/logs
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/quasar_swarm
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-quasar_swarm}
+      USE_MOCK_DATA: ${USE_MOCK_DATA:-true}
+      ZERODHA_API_KEY: ${ZERODHA_API_KEY:-}
+      ZERODHA_ACCESS_TOKEN: ${ZERODHA_ACCESS_TOKEN:-}
+      TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

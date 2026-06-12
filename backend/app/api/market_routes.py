@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Query
 
+from app.data.ingestion_service import (
+    ingest_mock_candles,
+    ingest_twelvedata_forex,
+    ingest_zerodha_mcx,
+)
 from app.db import (
     DatabaseUnavailable,
     fetch_latest_market_snapshot,
@@ -102,3 +107,18 @@ def market_candles(
                 }
             ],
         }
+
+
+@router.post("/ingest/mock")
+def ingest_mock_market_data():
+    return ingest_mock_candles()
+
+
+@router.post("/ingest/twelvedata")
+def ingest_twelvedata_market_data():
+    return ingest_twelvedata_forex()
+
+
+@router.post("/ingest/zerodha")
+def ingest_zerodha_market_data():
+    return ingest_zerodha_mcx()

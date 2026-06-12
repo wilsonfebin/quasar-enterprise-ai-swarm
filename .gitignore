@@ -11,9 +11,11 @@ venv/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Logs
 logs/*.log
+!logs/.gitkeep
 
 # Database volumes
 postgres_data/
