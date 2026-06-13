@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS market_candles (
     high DOUBLE PRECISION,
     low DOUBLE PRECISION,
     close DOUBLE PRECISION,
-    volume DOUBLE PRECISION
+    volume DOUBLE PRECISION,
+    fetched_at TIMESTAMPTZ,
+    inserted_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS smc_labels (

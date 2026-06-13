@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
-from psycopg2.extras import Json, RealDictCursor
+from psycopg2.extras import Json, RealDictCursor, execute_values
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -169,6 +169,32 @@ def seed_mock_market_data():
         connection.commit()
 
 
+def ensure_market_candle_metadata_columns():
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                ALTER TABLE market_candles
+                ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE market_candles
+                ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMPTZ DEFAULT NOW()
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE market_candles
+                SET inserted_at = COALESCE(inserted_at, ts),
+                    fetched_at = COALESCE(fetched_at, ts)
+                WHERE inserted_at IS NULL OR fetched_at IS NULL
+                """
+            )
+        connection.commit()
+
+
 def insert_market_candle(candle):
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -176,14 +202,14 @@ def insert_market_candle(candle):
                 """
                 INSERT INTO market_candles (
                     instrument, market_type, source, timeframe, ts,
-                    open, high, low, close, volume
+                    open, high, low, close, volume, fetched_at
                 )
                 VALUES (
                     %(instrument)s, %(market_type)s, %(source)s, %(timeframe)s, %(ts)s,
-                    %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s
+                    %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, %(fetched_at)s
                 )
                 RETURNING id, instrument, market_type, source, timeframe, ts,
-                    open, high, low, close, volume
+                    open, high, low, close, volume, fetched_at, inserted_at
                 """,
                 candle,
             )
@@ -193,6 +219,102 @@ def insert_market_candle(candle):
     return format_candle(inserted)
 
 
+def insert_market_candles_bulk(candles):
+    if not candles:
+        return {"inserted_count": 0, "duplicate_count": 0, "inserted_ids": []}
+
+    first = candles[0]
+    timestamps = [candle["ts"] for candle in candles]
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT ts
+                FROM market_candles
+                WHERE instrument = %s
+                    AND market_type = %s
+                    AND timeframe = %s
+                    AND source = %s
+                    AND ts = ANY(%s)
+                """,
+                (
+                    first["instrument"],
+                    first["market_type"],
+                    first["timeframe"],
+                    first["source"],
+                    timestamps,
+                ),
+            )
+            existing = {row["ts"] for row in cursor.fetchall()}
+            missing = [candle for candle in candles if candle["ts"] not in existing]
+            if missing:
+                execute_values(
+                    cursor,
+                    """
+                    INSERT INTO market_candles (
+                        instrument, market_type, source, timeframe, ts,
+                        open, high, low, close, volume, fetched_at
+                    )
+                    VALUES %s
+                    """,
+                    [
+                        (
+                            candle["instrument"],
+                            candle["market_type"],
+                            candle["source"],
+                            candle["timeframe"],
+                            candle["ts"],
+                            candle["open"],
+                            candle["high"],
+                            candle["low"],
+                            candle["close"],
+                            candle["volume"],
+                            candle["fetched_at"],
+                        )
+                        for candle in missing
+                    ],
+                    page_size=len(missing),
+                )
+                inserted_count = len(missing)
+            else:
+                inserted_count = 0
+        connection.commit()
+
+    return {
+        "inserted_count": inserted_count,
+        "duplicate_count": len(candles) - inserted_count,
+        "inserted_ids": [],
+    }
+
+
+def fetch_matching_market_candle(candle):
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, instrument, market_type, source, timeframe, ts,
+                    open, high, low, close, volume, fetched_at, inserted_at
+                FROM market_candles
+                WHERE instrument = %s
+                    AND market_type = %s
+                    AND timeframe = %s
+                    AND ts = %s
+                    AND source = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    candle["instrument"],
+                    candle["market_type"],
+                    candle["timeframe"],
+                    candle["ts"],
+                    candle["source"],
+                ),
+            )
+            row = cursor.fetchone()
+            return format_candle(row) if row else None
+
+
 def fetch_latest_market_snapshot(timeframe="1m"):
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -200,13 +322,21 @@ def fetch_latest_market_snapshot(timeframe="1m"):
                 """
                 SELECT DISTINCT ON (market_type, instrument, timeframe)
                     id, instrument, market_type, source, timeframe, ts,
-                    open, high, low, close, volume
+                    open, high, low, close, volume, fetched_at, inserted_at
                 FROM market_candles
                 WHERE (market_type, instrument, timeframe) IN (
                     ('MCX', 'NATURALGAS', %s),
                     ('FOREX', 'XAUUSD', %s)
                 )
-                ORDER BY market_type, instrument, timeframe, ts DESC, id DESC
+                ORDER BY market_type, instrument, timeframe,
+                    CASE
+                        WHEN source IN ('TWELVEDATA', 'ZERODHA') THEN 0
+                        WHEN source = 'AGG_1M' THEN 1
+                        ELSE 2
+                    END,
+                    inserted_at DESC NULLS LAST,
+                    ts DESC,
+                    id DESC
                 """,
                 (timeframe, timeframe),
             )
@@ -233,17 +363,64 @@ def fetch_market_candles(market_type, instrument, timeframe, limit=50):
             cursor.execute(
                 """
                 SELECT id, instrument, market_type, source, timeframe, ts,
-                    open, high, low, close, volume
+                    open, high, low, close, volume, fetched_at, inserted_at
                 FROM market_candles
                 WHERE market_type = %s
                     AND instrument = %s
                     AND timeframe = %s
-                ORDER BY ts DESC, id DESC
+                ORDER BY
+                    CASE
+                        WHEN source IN ('TWELVEDATA', 'ZERODHA') THEN 0
+                        WHEN source = 'AGG_1M' THEN 1
+                        ELSE 2
+                    END,
+                    inserted_at DESC NULLS LAST,
+                    ts DESC,
+                    id DESC
                 LIMIT %s
                 """,
                 (market_type, instrument, timeframe, limit),
             )
             return [format_candle(row) for row in cursor.fetchall()]
+
+
+def fetch_latest_candle_by_source(market_type, instrument, timeframe, source):
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, instrument, market_type, source, timeframe, ts,
+                    open, high, low, close, volume, fetched_at, inserted_at
+                FROM market_candles
+                WHERE market_type = %s
+                    AND instrument = %s
+                    AND timeframe = %s
+                    AND source = %s
+                ORDER BY inserted_at DESC NULLS LAST, ts DESC, id DESC
+                LIMIT 1
+                """,
+                (market_type, instrument, timeframe, source),
+            )
+            row = cursor.fetchone()
+            return format_candle(row) if row else None
+
+
+def fetch_candle_timestamps(market_type, instrument, timeframe, since):
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT ts
+                FROM market_candles
+                WHERE market_type = %s
+                    AND instrument = %s
+                    AND timeframe = %s
+                    AND ts >= %s
+                ORDER BY ts ASC, id ASC
+                """,
+                (market_type, instrument, timeframe, since),
+            )
+            return [row["ts"] for row in cursor.fetchall()]
 
 
 def fetch_smc_labels(market_type, instrument, timeframe, limit=50, connection=None):
@@ -286,6 +463,9 @@ def format_market_card(candle, labels, status):
         "source": candle["source"],
         "timeframe": candle["timeframe"],
         "timestamp": candle["ts"].isoformat(),
+        "exchange_candle_time": candle["ts"].isoformat(),
+        "fetched_at": candle["fetched_at"].isoformat() if candle.get("fetched_at") else "",
+        "inserted_at": candle["inserted_at"].isoformat() if candle.get("inserted_at") else "",
         "candle": {
             "open": candle["open"],
             "high": candle["high"],
@@ -313,6 +493,9 @@ def format_candle(row):
         "source": row["source"],
         "timeframe": row["timeframe"],
         "timestamp": row["ts"].isoformat(),
+        "exchange_candle_time": row["ts"].isoformat(),
+        "fetched_at": row["fetched_at"].isoformat() if row.get("fetched_at") else "",
+        "inserted_at": row["inserted_at"].isoformat() if row.get("inserted_at") else "",
         "open": row["open"],
         "high": row["high"],
         "low": row["low"],

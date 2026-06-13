@@ -7,7 +7,16 @@ from app.api.log_routes import router as log_router
 from app.api.market_routes import router as market_router
 from app.api.smc_routes import router as smc_router
 from app.data.ingestion_service import append_log, refresh_market_structure
-from app.db import DatabaseUnavailable, seed_mock_market_data
+from app.data.scheduler import (
+    start_twelvedata_scheduler,
+    start_zerodha_scheduler,
+    stop_twelvedata_scheduler,
+    stop_zerodha_scheduler,
+)
+from app.db import (
+    DatabaseUnavailable,
+    ensure_market_candle_metadata_columns,
+)
 
 app = FastAPI(title="Quasar Enterprise AI Delivery Swarm")
 
@@ -18,7 +27,7 @@ app.include_router(log_router, prefix="/logs", tags=["Logs"])
 
 
 @app.on_event("startup")
-def seed_day_1_mock_data():
+async def startup_services():
     twelvedata_configured = bool(os.getenv("TWELVEDATA_API_KEY", ""))
     zerodha_configured = bool(
         os.getenv("ZERODHA_API_KEY", "") and os.getenv("ZERODHA_ACCESS_TOKEN", "")
@@ -42,10 +51,19 @@ def seed_day_1_mock_data():
     )
 
     try:
-        seed_mock_market_data()
+        ensure_market_candle_metadata_columns()
         refresh_market_structure()
     except DatabaseUnavailable as exc:
-        print(f"Skipping Day-1 DB seed: {exc}")
+        print(f"Skipping startup DB refresh: {exc}")
+
+    start_twelvedata_scheduler()
+    start_zerodha_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_background_tasks():
+    await stop_twelvedata_scheduler()
+    await stop_zerodha_scheduler()
 
 
 @app.get("/health")

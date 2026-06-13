@@ -9,8 +9,8 @@ LOG_DIR = Path("logs")
 @router.get("/{log_name}")
 def read_log(log_name: str):
     allowed = {
-        "mcx": "mcx_live.log",
-        "forex": "forex_live.log",
+        "mcx": "mcx.log",
+        "forex": "forex.log",
         "backend": "backend.log",
         "agent": "agent_workflow.log",
     }

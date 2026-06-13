@@ -39,9 +39,9 @@ def get_json(path: str):
         return {"error": str(exc)}
 
 
-def post_json(path: str, timeout: int = 10):
+def post_json(path: str, timeout: int = 10, payload: dict | None = None):
     try:
-        response = requests.post(f"{BACKEND_URL}{path}", timeout=timeout)
+        response = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=timeout)
         response.raise_for_status()
         return response.json()
     except Exception as exc:
@@ -442,6 +442,292 @@ def render_status_strip():
     st.sidebar.caption("🚫 No Buy/Sell Signals")
 
 
+def render_live_feed_controls():
+    status = get_json("/market/ingestion/status")
+    feed = status.get("twelvedata", {}) if "error" not in status else {}
+    mcx_feed = status.get("zerodha", {}) if "error" not in status else {}
+    latest = get_json("/market/latest")
+    forex = latest.get("forex", {}) if "error" not in latest else {}
+    mcx = latest.get("mcx", {}) if "error" not in latest else {}
+    forex_health = get_candle_health("FOREX", "XAUUSD")
+    mcx_health = get_candle_health("MCX", "NATURALGAS")
+
+    if "error" in status:
+        feed = {"last_error": status["error"], "market_closed": True}
+
+    forex_running = feed_worker_alive(feed)
+    mcx_running = feed_worker_alive(mcx_feed)
+    forex_error = feed_provider_error(feed)
+    mcx_error_statuses = {"failed", "token_error", "missing_credentials", "no_data"}
+    mcx_provider_error = mcx_feed.get("last_status") in mcx_error_statuses
+
+    render_feed_card(
+        title="Forex Live Feed",
+        source="TwelveData",
+        instrument="XAUUSD",
+        status_label=feed_status_label(
+            configured=bool(feed),
+            running=forex_running,
+            market_closed=bool(feed.get("market_closed")),
+            provider_error=forex_error,
+        ),
+        feed_state=feed,
+        exchange_candle=forex.get("exchange_candle_time") or feed.get("exchange_candle_time") or forex.get("timestamp") or "—",
+        fetched_at=forex.get("fetched_at") or feed.get("fetched_at") or "—",
+        last_price=feed.get("last_price") or forex.get("candle", {}).get("close"),
+        health=forex_health,
+        market_type="FOREX",
+        instrument_code="XAUUSD",
+    )
+
+    source = mcx.get("source", "MOCK_INGEST")
+    configured = source == "ZERODHA" or bool(mcx_feed)
+    mcx_market_closed = bool(mcx_feed.get("market_closed")) or "Closed" in market_session_text("MCX", mcx.get("timestamp", ""))
+    render_feed_card(
+        title="MCX Live Feed",
+        source="Zerodha" if configured else "Mock",
+        instrument="NATURALGAS",
+        status_label=feed_status_label(
+            configured=configured,
+            running=mcx_running,
+            market_closed=mcx_market_closed,
+            provider_error=mcx_provider_error,
+        ),
+        feed_state=mcx_feed,
+        exchange_candle=mcx.get("exchange_candle_time") or mcx_feed.get("exchange_candle_time") or mcx.get("timestamp") or "—",
+        fetched_at=mcx.get("fetched_at") or mcx_feed.get("fetched_at") or "—",
+        last_price=mcx_feed.get("last_price") or mcx.get("candle", {}).get("close"),
+        health=mcx_health,
+        market_type="MCX",
+        instrument_code="NATURALGAS",
+    )
+
+    with st.sidebar.expander("Advanced Feed Controls", expanded=False):
+        st.caption("Forex")
+        forex_start_cols = st.columns(2)
+        with forex_start_cols[0]:
+            if st.button(
+                "🟢 Start Live Ingestion",
+                key="start_forex_live_ingestion",
+                use_container_width=True,
+                disabled=forex_running,
+            ):
+                post_json("/market/ingestion/start")
+                st.rerun()
+        with forex_start_cols[1]:
+            if st.button(
+                "🔴 Pause Live Ingestion",
+                key="pause_forex_live_ingestion",
+                use_container_width=True,
+                disabled=not forex_running,
+            ):
+                post_json("/market/ingestion/stop")
+                st.rerun()
+        if forex_running:
+            st.caption("Current state: 🟢 Live ingestion worker is running.")
+        else:
+            st.caption("Current state: 🔴 Live ingestion worker is stopped.")
+        if st.button(
+            "Fill Missing Candles",
+            key="backfill_forex_candles",
+            use_container_width=True,
+        ):
+            st.session_state["forex_backfill_result"] = post_json(
+                "/market/ingest/twelvedata/backfill?days=30&chunk_days=3&dry_run=false",
+                timeout=300,
+            )
+            st.rerun()
+        st.caption("Forex")
+        st.caption(f"Auto ingest enabled/running: {feed.get('enabled', False)} / {feed.get('running', False)}")
+        st.caption(f"Worker alive: {feed.get('worker_alive', False)}")
+        st.caption(f"Last success: {feed.get('last_success_at') or '—'}")
+        st.caption(f"Next run: {feed.get('next_run_at') or '—'}")
+        st.caption(f"Failures: {feed.get('failure_count', 0)}")
+        st.caption(f"Duplicate skips: {feed.get('duplicate_skipped_count', 0)}")
+        st.caption(f"Provider raw candle time: {feed.get('provider_raw_datetime') or '—'}")
+        st.caption(
+            "Timestamp corrected: "
+            f"{feed.get('timestamp_corrected', False)}"
+        )
+        st.caption(
+            "Correction reason: "
+            f"{feed.get('timestamp_correction_reason') or 'None'}"
+        )
+        st.caption(f"Expected candles: {forex_health.get('expected_candles', 0):,}")
+        st.caption(f"Coverage percent: {forex_health.get('coverage_percent', 0)}%")
+        st.caption(f"Provider error: {feed.get('last_error') or 'None'}")
+        if st.session_state.get("forex_backfill_result"):
+            result = st.session_state["forex_backfill_result"]
+            st.caption(f"Last backfill status: {result.get('status', result.get('error', 'unknown'))}")
+
+        st.caption("MCX")
+        mcx_start_cols = st.columns(2)
+        with mcx_start_cols[0]:
+            if st.button(
+                "🟢 Start Live Ingestion",
+                key="start_mcx_live_ingestion",
+                use_container_width=True,
+                disabled=mcx_running,
+            ):
+                post_json("/market/mcx-ingestion/start")
+                st.rerun()
+        with mcx_start_cols[1]:
+            if st.button(
+                "🔴 Pause Live Ingestion",
+                key="pause_mcx_live_ingestion",
+                use_container_width=True,
+                disabled=not mcx_running,
+            ):
+                post_json("/market/mcx-ingestion/stop")
+                st.rerun()
+        if mcx_running:
+            st.caption("Current state: 🟢 Live ingestion worker is running.")
+        else:
+            st.caption("Current state: 🔴 Live ingestion worker is stopped.")
+        if st.button(
+            "Fill Missing Candles",
+            key="backfill_mcx_candles",
+            use_container_width=True,
+        ):
+            st.session_state["mcx_backfill_result"] = post_json(
+                "/market/ingest/zerodha/backfill?days=60&chunk_days=5&dry_run=false",
+                timeout=600,
+            )
+            st.rerun()
+        st.caption("MCX")
+        st.caption(f"Auto ingest enabled/running: {mcx_feed.get('enabled', False)} / {mcx_feed.get('running', False)}")
+        st.caption(f"Worker alive: {mcx_feed.get('worker_alive', False)}")
+        st.caption(f"Last success: {mcx_feed.get('last_success_at') or '—'}")
+        st.caption(f"Next run: {mcx_feed.get('next_run_at') or '—'}")
+        st.caption(f"Failures: {mcx_feed.get('failure_count', 0)}")
+        st.caption(f"Credential errors: {mcx_feed.get('credential_error_count', 0)}")
+        st.caption(f"No data: {mcx_feed.get('no_data_count', 0)}")
+        st.caption(f"Duplicate skips: {mcx_feed.get('duplicate_skipped_count', 0)}")
+        st.caption(f"Expected candles: {mcx_health.get('expected_candles', 0):,}")
+        st.caption(f"Coverage percent: {mcx_health.get('coverage_percent', 0)}%")
+        st.caption(f"Provider error: {mcx_feed.get('last_error') or 'None'}")
+        if st.session_state.get("mcx_backfill_result"):
+            result = st.session_state["mcx_backfill_result"]
+            st.caption(f"Last backfill status: {result.get('status', result.get('error', 'unknown'))}")
+
+
+def get_candle_health(market_type, instrument):
+    return get_json(
+        f"/market/candle-health?market_type={market_type}&instrument={instrument}&timeframe=1m"
+    )
+
+
+def feed_worker_alive(feed):
+    return bool(feed.get("worker_alive", feed.get("task_alive", False)))
+
+
+def feed_provider_error(feed):
+    return bool(feed.get("last_error")) and feed.get("last_status") in {
+        "failed",
+        "token_error",
+        "missing_credentials",
+        "no_data",
+    }
+
+
+def feed_worker_label(feed):
+    if feed_provider_error(feed):
+        return "🟡 Error"
+    return "🟢 Running" if feed_worker_alive(feed) else "🔴 Stopped"
+
+
+def feed_status_label(configured, running, market_closed, provider_error):
+    if provider_error:
+        return "Error · Provider Failure"
+    if not configured:
+        return "Stopped · Not Configured"
+    if running:
+        return "Running · Market Closed" if market_closed else "Running · Market Open"
+    if market_closed:
+        return "Stopped · Market Closed"
+    return "Stopped · Market Open"
+
+
+def coverage_label(health):
+    percent = float(health.get("coverage_percent") or 0)
+    if percent >= 90:
+        return "Strong"
+    if percent >= 50:
+        return "Moderate"
+    if percent > 0:
+        return "Low"
+    return "None"
+
+
+def analysis_readiness(health, configured=True):
+    total = int(health.get("total_candles") or 0)
+    expected_7d = 10080
+    expected_30d = 43200
+    gap = int(health.get("largest_gap_minutes") or 0)
+    if not configured or total == 0:
+        return "Not Ready"
+    if total >= expected_30d and gap <= 10:
+        return "Strong"
+    if total >= expected_7d:
+        return "Moderate"
+    return "Weak"
+
+
+def render_feed_card(
+    title,
+    source,
+    instrument,
+    status_label,
+    feed_state,
+    exchange_candle,
+    fetched_at,
+    last_price,
+    health,
+    market_type,
+    instrument_code,
+):
+    st.sidebar.markdown(f"**{title}**")
+    configured = "Not Configured" not in status_label
+    st.sidebar.caption(f"Source: {source}")
+    st.sidebar.caption(f"Instrument: {instrument}")
+    st.sidebar.caption(f"Status: {status_label}")
+    st.sidebar.caption(f"Worker Status: {feed_worker_label(feed_state)}")
+    st.sidebar.caption(f"Worker: {'Alive' if feed_worker_alive(feed_state) else 'Stopped'}")
+    last_tick = feed_state.get("last_tick") or feed_state.get("last_run_at") or "—"
+    st.sidebar.caption(f"Last Tick: {format_short_timestamp(last_tick, 'IST') if last_tick and last_tick != '—' else '—'}")
+    st.sidebar.caption(f"Latest Candle: {format_timestamp(exchange_candle, 'IST') if exchange_candle and exchange_candle != '—' else '—'}")
+    if last_price is None:
+        price_text = "—"
+    else:
+        price_text = format_price(last_price, market_type, instrument_code)
+    st.sidebar.caption(f"Last Price: {price_text}")
+    freshness = true_freshness_label(exchange_candle, 'IST') if exchange_candle and exchange_candle != '—' else '—'
+    if "Market Closed" in status_label and freshness != "—":
+        freshness = f"Market closed · {freshness}"
+    st.sidebar.caption(f"Freshness: {freshness}")
+    st.sidebar.caption(f"Candle History Available: {int(health.get('total_candles') or 0):,} candles")
+    st.sidebar.caption(f"Coverage: {coverage_label(health)}")
+    st.sidebar.caption(f"Largest Gap: {int(health.get('largest_gap_minutes') or 0)}m")
+    st.sidebar.caption(f"Analysis Readiness: {analysis_readiness(health, configured=configured)}")
+    if st.sidebar.button("Check Data Quality", key=f"sanity_{market_type}_{instrument_code}", use_container_width=True):
+        st.session_state[f"sanity_{market_type}_{instrument_code}"] = post_json(
+            "/market/sanity-check",
+            payload={
+                "market_type": market_type,
+                "instrument": instrument_code,
+                "timeframe": "1m",
+            },
+        )
+        st.rerun()
+    sanity = st.session_state.get(f"sanity_{market_type}_{instrument_code}")
+    if sanity:
+        st.sidebar.caption(
+            f"Sanity: Coverage {sanity.get('coverage', '—')} · "
+            f"Largest Gap {sanity.get('largest_gap_minutes', '—')}m"
+        )
+        st.sidebar.caption(sanity.get("recommendation", ""))
+
+
 def format_price(value, market_type=None, instrument=None):
     if market_type == "MCX" and instrument == "NATURALGAS":
         return f"{float(value):.2f}"
@@ -499,6 +785,26 @@ def format_freshness(value, timezone_name):
         return "unavailable"
 
 
+def true_freshness_label(value, timezone_name):
+    try:
+        target_time = parse_timestamp(value).astimezone(TIMEZONE_OPTIONS[timezone_name])
+        now = datetime.now(TIMEZONE_OPTIONS[timezone_name])
+        elapsed = int((now - target_time).total_seconds())
+        if elapsed < -60:
+            return "provider time ahead"
+        if elapsed < 60:
+            return "just now"
+        if elapsed < 3600:
+            return f"{elapsed // 60}m old"
+        if elapsed < 86400:
+            hours = elapsed // 3600
+            minutes = (elapsed % 3600) // 60
+            return f"{hours}h {minutes}m old"
+        return f"{elapsed // 86400}d old"
+    except Exception:
+        return "unavailable"
+
+
 def market_session_text(market_type, timestamp):
     try:
         parsed = parse_timestamp(timestamp)
@@ -529,7 +835,7 @@ def readable_source(source, timeframe):
         "MOCK_INGEST": "Mock Ingest",
         "MOCK_MCX": "Mock MCX",
         "MOCK_FOREX": "Mock Forex",
-        "TWELVEDATA": "TwelveData",
+        "TWELVEDATA": "TWELVEDATA",
         "ZERODHA": "Zerodha",
     }
     return source_map.get(source, source.replace("_", " ").title())
@@ -1240,13 +1546,14 @@ def render_agent_monitor():
 
 
 if page == "Live Market Intelligence":
+    render_live_feed_controls()
     render_status_strip()
-
     selected_timezone = st.sidebar.radio(
         "Timezone",
         list(TIMEZONE_OPTIONS.keys()),
         horizontal=True,
         key="global_timezone",
+        index=list(TIMEZONE_OPTIONS.keys()).index("IST"),
     )
     if st.sidebar.button("Simulate Live Market Update", use_container_width=True):
         refresh_result = post_json("/market/ingest/mock")
