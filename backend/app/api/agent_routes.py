@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.agents.band_client import (
     BandClient,
@@ -8,7 +8,14 @@ from app.agents.band_client import (
     utc_now_iso,
 )
 from app.agents.workflow_service import WorkflowService
-from app.agents.workflow_service import get_band_processing_state
+from app.agents.workflow_service import (
+    get_band_processing_state,
+    get_workflow_details,
+    get_workflow_state,
+    reset_workflow_state,
+    update_band_processing_state,
+)
+from app.agents.specialist_service import SpecialistProcessorService
 from app.data.ingestion_service import append_log
 
 router = APIRouter()
@@ -18,48 +25,42 @@ router = APIRouter()
 def workflow_status():
     band_status = band_config_status()
     band_status.update(get_band_processing_state())
+    state = get_workflow_state()
     return {
-        "workflow_id": "quasar-delivery-swarm-001",
-        "current_agent": "Market Intelligence Agent",
-        "progress": 35,
-        "steps": [
-            {
-                "agent": "Requirement Agent",
-                "status": "completed",
-                "summary": "Converted business requirement into structured delivery scope.",
-            },
-            {
-                "agent": "Market Intelligence Agent",
-                "status": "running",
-                "summary": "Reviewing MCX and Forex SMC market structure labels.",
-            },
-            {
-                "agent": "Architecture Agent",
-                "status": "waiting",
-                "summary": "Waiting for market intelligence context.",
-            },
-            {
-                "agent": "Risk Governance Agent",
-                "status": "waiting",
-                "summary": "Pending architecture and market intelligence output.",
-            },
-            {
-                "agent": "Delivery Planning Agent",
-                "status": "waiting",
-                "summary": "Pending governance review.",
-            },
-            {
-                "agent": "Final Review Agent",
-                "status": "waiting",
-                "summary": "Pending all agent outputs.",
-            },
-        ],
+        "workflow_id": state["workflow_id"],
+        "current_agent": state["current_agent"],
+        "current_state": state.get("status", "waiting"),
+        "progress": state["progress"],
+        "steps": state["steps"],
         "handoffs": [
             "Requirement Agent → Market Intelligence Agent",
-            "Market Intelligence Agent analyzing live market context",
+            "Market Intelligence Agent → Architecture Agent",
+            "Architecture Agent → Risk Governance Agent",
+            "Risk Governance Agent → Delivery Planning Agent",
+            "Delivery Planning Agent → Final Review Agent",
         ],
         "band": band_status,
     }
+
+
+@router.get("/workflow/details")
+def workflow_details():
+    return get_workflow_details()
+
+
+@router.post("/workflow/reset")
+def workflow_reset():
+    state = reset_workflow_state()
+    update_band_processing_state(
+        last_message_status="waiting",
+        last_chat_id="",
+        last_message_id="",
+        last_error="",
+        last_response="",
+        last_processed_at="",
+        orchestration_mode="internal",
+    )
+    return get_workflow_details()
 
 
 @router.get("/band/status")
@@ -144,6 +145,11 @@ def band_chats():
     }
 
 
+@router.get("/band/participants")
+def band_participants(chat_id: str | None = Query(None)):
+    return WorkflowService().discover_participants(chat_id=chat_id)
+
+
 @router.post("/band/test-workflow")
 def band_test_workflow():
     result = WorkflowService().run_band_health_check()
@@ -158,3 +164,17 @@ def band_debug_last_response():
 @router.post("/band/process-next")
 def band_process_next():
     return WorkflowService().process_next_band_message()
+
+
+@router.post("/band/run-quasar-workflow")
+def band_run_quasar_workflow(
+    debug: bool = Query(False), analysis_scope: str = Query("MCX")
+):
+    return WorkflowService().run_quasar_workflow_from_band(
+        debug=debug, analysis_scope=analysis_scope
+    )
+
+
+@router.post("/band/process-specialists")
+def band_process_specialists(chat_id: str | None = Query(None)):
+    return SpecialistProcessorService().process_all(chat_id=chat_id)

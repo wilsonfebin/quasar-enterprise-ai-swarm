@@ -79,11 +79,23 @@ def sanitize_value(value: Any) -> Any:
 
 
 class BandClient:
-    def __init__(self):
-        self.enabled = os.getenv("BAND_ENABLED", "false").lower() == "true"
-        self.agent_id = os.getenv("BAND_AGENT_ID", "")
-        self.api_key = os.getenv("BAND_API_KEY", "")
-        self.base_url = os.getenv("BAND_BASE_URL", "").rstrip("/")
+    def __init__(
+        self,
+        agent_id: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        enabled: bool | None = None,
+    ):
+        self.enabled = (
+            os.getenv("BAND_ENABLED", "false").lower() == "true"
+            if enabled is None
+            else enabled
+        )
+        self.agent_id = agent_id if agent_id is not None else os.getenv("BAND_AGENT_ID", "")
+        self.api_key = api_key if api_key is not None else os.getenv("BAND_API_KEY", "")
+        self.base_url = (
+            base_url if base_url is not None else os.getenv("BAND_BASE_URL", "")
+        ).rstrip("/")
 
     def is_enabled(self) -> bool:
         return self.enabled
@@ -354,7 +366,7 @@ def extract_agent_identity(agent: dict[str, Any], fallback_agent_id: str) -> dic
     data = agent.get("data") if isinstance(agent.get("data"), dict) else agent
     return {
         "agent_id": str(data.get("id") or fallback_agent_id),
-        "agent_name": str(data.get("name") or data.get("handle") or "Band Agent"),
+        "agent_name": str(data.get("handle") or data.get("name") or "Band Agent"),
     }
 
 

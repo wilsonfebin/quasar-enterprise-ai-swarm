@@ -1,5 +1,7 @@
 import html
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -24,7 +26,7 @@ st.caption("Live Market Intelligence + Band Agent Workflow Monitor")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["Live Market Intelligence", "Logs & Delivery Pack"],
+    ["Live Market Intelligence", "Logs & Review Notes"],
 )
 
 
@@ -37,13 +39,29 @@ def get_json(path: str):
         return {"error": str(exc)}
 
 
-def post_json(path: str):
+def post_json(path: str, timeout: int = 10):
     try:
-        response = requests.post(f"{BACKEND_URL}{path}", timeout=10)
+        response = requests.post(f"{BACKEND_URL}{path}", timeout=timeout)
         response.raise_for_status()
         return response.json()
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def start_workflow_thread(analysis_scope: str = "MCX"):
+    def run_workflow():
+        try:
+            requests.post(
+                f"{BACKEND_URL}/agents/band/run-quasar-workflow",
+                params={"analysis_scope": analysis_scope},
+                timeout=120,
+            )
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=run_workflow, daemon=True)
+    thread.start()
+    return thread
 
 
 st.markdown(
@@ -258,6 +276,107 @@ st.markdown(
         font-size: 11px;
         opacity: 0.82;
         margin-top: 0.2rem;
+    }
+    .agent-response-preview {
+        font-size: 10px;
+        line-height: 1.25;
+        opacity: 0.72;
+        margin-top: 0.25rem;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 1;
+        -webkit-box-orient: vertical;
+    }
+    .agent-band-badge {
+        border: 1px solid rgba(46, 160, 67, 0.45);
+        border-radius: 999px;
+        padding: 0.05rem 0.32rem;
+        font-size: 10px;
+        margin-top: 0.2rem;
+        opacity: 0.9;
+    }
+    .workflow-section-title {
+        font-size: 13px;
+        font-weight: 700;
+        margin: 0.75rem 0 0.35rem 0;
+    }
+    .decision-card {
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        padding: 0.55rem 0.65rem;
+        margin-top: 0.55rem;
+        font-size: 11px;
+        line-height: 1.4;
+    }
+    .decision-title {
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 0.3rem;
+    }
+    .decision-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.28rem 0.55rem;
+        margin-bottom: 0.35rem;
+    }
+    .decision-label {
+        opacity: 0.75;
+        font-weight: 700;
+    }
+    .decision-list {
+        margin: 0.15rem 0 0.35rem 0;
+        padding-left: 1rem;
+    }
+    .scope-preview {
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.025);
+        padding: 0.5rem 0.6rem;
+        margin: 0.35rem 0 0.55rem 0;
+        font-size: 11px;
+        line-height: 1.35;
+    }
+    .scope-preview-title {
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+    .scope-preview-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.25rem 0.55rem;
+    }
+    .response-scroll {
+        max-height: 220px;
+        overflow-y: auto;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.02);
+        padding: 0.45rem 0.55rem;
+        font-size: 11px;
+        line-height: 1.38;
+    }
+    .response-block-title {
+        font-weight: 700;
+        margin-top: 0.35rem;
+    }
+    .response-block-title:first-child {
+        margin-top: 0;
+    }
+    .delivery-section {
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.025);
+        padding: 0.42rem 0.55rem;
+        margin-bottom: 0.35rem;
+        font-size: 11px;
+        line-height: 1.35;
+    }
+    .delivery-title {
+        font-weight: 700;
+        margin-bottom: 0.15rem;
     }
     .band-test-card {
         border: 1px solid rgba(255, 255, 255, 0.10);
@@ -605,10 +724,335 @@ def render_market_card(title, market_type, instrument, timezone_name):
             render_smc_labels(labels.get("labels", []))
 
 
+def clean_agent_output(text: str) -> str:
+    prefixes = [
+        "Requirement Agent response:",
+        "Market Intelligence Agent response:",
+        "Architecture Agent response:",
+        "System Readiness Agent response:",
+        "Risk Governance Agent response:",
+        "Delivery Planning Agent response:",
+        "Final Review Agent response:",
+    ]
+    cleaned = str(text or "").strip()
+    for prefix in prefixes:
+        if cleaned.startswith(prefix):
+            return cleaned[len(prefix) :].strip()
+    return cleaned
+
+
+def short_time(timestamp: str) -> str:
+    if not timestamp:
+        return "—"
+    try:
+        return datetime.fromisoformat(timestamp).strftime("%H:%M:%S")
+    except ValueError:
+        return timestamp[:8] or "—"
+
+
+def display_scope_label(scope_value: str, fallback: str = "MCX NATURALGAS") -> str:
+    scope = str(scope_value or "").upper()
+    if scope == "FOREX" or "XAUUSD" in str(scope_value).upper():
+        return "Forex XAUUSD"
+    if scope == "MCX" or "NATURALGAS" in str(scope_value).upper():
+        return "MCX NATURALGAS"
+    return fallback
+
+
+def extract_line_value(text: str, label: str) -> str:
+    lines = str(text or "").splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower().startswith(label.lower()):
+            value = stripped[len(label) :].strip(" :")
+            if value:
+                return value
+            if index + 1 < len(lines):
+                return lines[index + 1].strip(" -")
+    return ""
+
+
+def extract_section_lines(text: str, start_label: str, stop_labels: list[str]) -> list[str]:
+    lines = str(text or "").splitlines()
+    collected: list[str] = []
+    collecting = False
+    for line in lines:
+        stripped = line.strip()
+        if not collecting and stripped.lower().startswith(start_label.lower()):
+            collecting = True
+            remainder = stripped[len(start_label) :].strip(" :")
+            if remainder:
+                collected.append(remainder)
+            continue
+        if collecting:
+            if any(stripped.lower().startswith(stop.lower()) for stop in stop_labels):
+                break
+            if stripped:
+                collected.append(stripped.strip("- "))
+    return collected
+
+
+def parse_prompt_context(prompt: str) -> dict[str, object]:
+    context = {
+        "scope": extract_line_value(prompt, "Scope") or extract_line_value(prompt, "Selected scope"),
+        "timeframe": extract_line_value(prompt, "Timeframe") or "1m",
+        "candle": extract_line_value(prompt, "Candle"),
+        "bias": extract_line_value(prompt, "Dominant Bias") or "Neutral",
+        "session": extract_line_value(prompt, "Session"),
+        "data_age": extract_line_value(prompt, "Data Age"),
+        "source": extract_line_value(prompt, "Source"),
+        "labels": [],
+    }
+    labels = extract_section_lines(
+        prompt,
+        "Top Labels",
+        ["Dominant Bias", "Session", "Data Age", "Source", "Safety"],
+    )
+    context["labels"] = labels[:3]
+    return context
+
+
+def confidence_label(summary: str) -> str:
+    text = str(summary or "")
+    percents = []
+    for token in text.replace(",", " ").split():
+        if token.endswith("%"):
+            try:
+                percents.append(int(token.strip("%.")))
+            except ValueError:
+                pass
+    if not percents:
+        return "Waiting" if not summary else "Moderate"
+    average = sum(percents[:3]) / min(len(percents), 3)
+    if average >= 75:
+        return "Strong"
+    if average >= 55:
+        return "Moderate"
+    return "Weak"
+
+
+def final_decision_data(workflow_details: dict, selected_scope: str) -> dict[str, object]:
+    summary = workflow_details.get("final_summary", "")
+    steps = workflow_details.get("steps", [])
+    final_step = next(
+        (step for step in steps if step.get("agent") == "Final Review Agent"),
+        {},
+    )
+    prompt_context = parse_prompt_context(final_step.get("prompt_sent", ""))
+    scope = (
+        prompt_context.get("scope")
+        or workflow_details.get("analysis_scope")
+        or selected_scope
+    )
+    decision_state = extract_line_value(summary, "Decision State") or (
+        "Waiting" if workflow_details.get("status") == "waiting" else "WATCH"
+    )
+    evidence = extract_section_lines(
+        summary,
+        "Evidence",
+        ["Confidence", "Next Validation", "Specialist Notes", "Safety"],
+    )
+    if not evidence:
+        evidence = list(prompt_context.get("labels", []))
+    next_validation = extract_line_value(summary, "Next Validation")
+    if not next_validation:
+        next_lines = extract_section_lines(summary, "Next Validation", ["Specialist Notes", "Safety"])
+        next_validation = next_lines[0] if next_lines else "Waiting for Band analysis."
+    return {
+        "scope": display_scope_label(str(scope), selected_scope),
+        "decision_state": decision_state,
+        "confidence": confidence_label(summary),
+        "evidence": evidence[:3],
+        "next_validation": next_validation,
+        "safety": "Advisory-only. No orders. No buy/sell signals.",
+    }
+
+
+def normalize_label_text(label: str) -> str:
+    return str(label or "UNKNOWN").replace("_", " ").title()
+
+
+def label_direction(label: dict) -> str:
+    direction = str(label.get("direction") or "").upper()
+    if direction:
+        return direction
+    label_name = str(label.get("label") or "").upper()
+    if "BULLISH" in label_name:
+        return "BULLISH"
+    if "BEARISH" in label_name:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def dominant_bias_from_labels(labels: list[dict]) -> str:
+    bullish = sum(float(label.get("confidence") or 0) for label in labels if label_direction(label) == "BULLISH")
+    bearish = sum(float(label.get("confidence") or 0) for label in labels if label_direction(label) == "BEARISH")
+    if bullish > bearish:
+        return "Mixed Bullish" if bearish else "Bullish"
+    if bearish > bullish:
+        return "Mixed Bearish" if bullish else "Bearish"
+    if bullish or bearish:
+        return "Conflicted"
+    return "Neutral"
+
+
+def selected_market_params(analysis_scope: str) -> tuple[str, str, str]:
+    if analysis_scope == "FOREX":
+        return "FOREX", "XAUUSD", "Forex XAUUSD"
+    return "MCX", "NATURALGAS", "MCX NATURALGAS"
+
+
+def get_selected_market_preview(analysis_scope: str, timezone_name: str = "UTC") -> dict[str, str]:
+    market_type, instrument, scope_label = selected_market_params(analysis_scope)
+    candles = get_json(
+        f"/market/candles?market_type={market_type}&instrument={instrument}&timeframe=1m&limit=1"
+    )
+    labels_response = get_json(
+        f"/smc/labels?market_type={market_type}&instrument={instrument}&timeframe=1m&limit=20"
+    )
+    labels = labels_response.get("labels", []) if "error" not in labels_response else []
+    top_label = labels[0] if labels else {}
+    top_signal = "Waiting for labels"
+    if top_label:
+        confidence = int(round(float(top_label.get("confidence") or 0) * 100))
+        top_signal = f"{normalize_label_text(top_label.get('label'))} {confidence}%"
+
+    candle_rows = candles.get("candles", []) if "error" not in candles else []
+    latest = candle_rows[0] if candle_rows else {}
+    timestamp = latest.get("timestamp", "")
+    session = market_session_text(market_type, timestamp) if timestamp else "Waiting"
+    data_age = format_freshness(timestamp, timezone_name) if timestamp else "Waiting"
+    return {
+        "scope": scope_label,
+        "dominant_bias": dominant_bias_from_labels(labels),
+        "top_signal": top_signal,
+        "session": session,
+        "data_age": data_age,
+        "safety": "Advisory-only",
+    }
+
+
+def render_selected_market_preview(preview: dict[str, str]):
+    st.markdown(
+        (
+            '<div class="scope-preview">'
+            '<div class="scope-preview-title">Selected Market Preview</div>'
+            '<div class="scope-preview-grid">'
+            f'<div><span class="decision-label">Selected Scope:</span> {html.escape(preview.get("scope", ""))}</div>'
+            f'<div><span class="decision-label">Dominant Bias:</span> {html.escape(preview.get("dominant_bias", ""))}</div>'
+            f'<div><span class="decision-label">Top Signal:</span> {html.escape(preview.get("top_signal", ""))}</div>'
+            f'<div><span class="decision-label">Session:</span> {html.escape(preview.get("session", ""))}</div>'
+            f'<div><span class="decision-label">Data Age:</span> {html.escape(preview.get("data_age", ""))}</div>'
+            f'<div><span class="decision-label">Safety Mode:</span> {html.escape(preview.get("safety", ""))}</div>'
+            "</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_final_decision_card(decision: dict[str, object]):
+    evidence_items = "".join(
+        f"<li>{html.escape(str(item))}</li>" for item in decision.get("evidence", [])
+    )
+    if not evidence_items:
+        evidence_items = "<li>Waiting for Band analysis.</li>"
+    st.markdown(
+        (
+            '<div class="decision-card">'
+            '<div class="decision-title">Final Specialist Decision</div>'
+            '<div class="decision-grid">'
+            f'<div><span class="decision-label">Scope:</span> {html.escape(str(decision.get("scope", "")))}</div>'
+            f'<div><span class="decision-label">Decision State:</span> {html.escape(str(decision.get("decision_state", "")))}</div>'
+            f'<div><span class="decision-label">Confidence:</span> {html.escape(str(decision.get("confidence", "")))}</div>'
+            f'<div><span class="decision-label">Safety Mode:</span> Advisory-only</div>'
+            "</div>"
+            '<div class="decision-label">Key Evidence</div>'
+            f'<ul class="decision-list">{evidence_items}</ul>'
+            '<div class="decision-label">Next Validation</div>'
+            f'<div>{html.escape(str(decision.get("next_validation", "")))}</div>'
+            '<div class="decision-label" style="margin-top:0.35rem;">Safety</div>'
+            f'<div>{html.escape(str(decision.get("safety", "")))}</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_formatted_agent_response(step: dict, selected_scope: str):
+    response_text = clean_agent_output(
+        step.get("response_text") or step.get("summary") or "Waiting for Band analysis."
+    )
+    prompt_context = parse_prompt_context(step.get("prompt_sent", ""))
+    labels = list(prompt_context.get("labels", []))
+    decision_state = (
+        extract_line_value(response_text, "Decision State")
+        or extract_line_value(response_text, "State")
+        or str(prompt_context.get("bias") or step.get("status", "waiting")).title()
+    )
+    evidence = labels[:3] or extract_section_lines(
+        response_text,
+        "Evidence",
+        ["Next Validation", "Next Step", "Safety", "Specialist Notes"],
+    )
+    if not evidence:
+        evidence = [response_text[:180]]
+    next_step = (
+        extract_line_value(response_text, "Next Validation")
+        or extract_line_value(response_text, "Next Step")
+        or "Wait for next candle close and validate higher timeframe context."
+    )
+    agent = step.get("agent", "")
+    if agent == "Requirement Agent":
+        decision_state = "Scope Confirmed"
+        next_step = "Continue specialist review for the selected market only."
+    elif agent == "Architecture Agent":
+        decision_state = "Readiness Review"
+        next_step = "Check freshness, session state, feed source, and label availability."
+        evidence = [
+            f"Data age: {prompt_context.get('data_age') or 'Unknown'}",
+            f"Session: {prompt_context.get('session') or 'Unknown'}",
+            f"Source: {prompt_context.get('source') or 'Unknown'}",
+        ]
+    elif agent == "Risk Governance Agent":
+        decision_state = "Guardrails Active"
+        next_step = "Require confirmation and avoid stale or conflicted structure."
+    elif agent == "Delivery Planning Agent":
+        decision_state = "Next-Step Plan"
+    elif agent == "Final Review Agent":
+        decision_state = extract_line_value(response_text, "Decision State") or "WATCH"
+
+    duration = step.get("duration_seconds")
+    completed_at = short_time(step.get("completed_at", ""))
+    timing = f"{completed_at} • {duration}s" if step.get("completed_at") and duration is not None else ""
+    evidence_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in evidence[:3])
+    timing_block = (
+        '<div class="response-block-title">Timing</div>'
+        f'<div>{html.escape(timing)}</div>'
+        if timing
+        else ""
+    )
+    st.markdown(
+        (
+            '<div class="response-scroll">'
+            '<div class="response-block-title">State</div>'
+            f'<div>{html.escape(str(decision_state))}</div>'
+            '<div class="response-block-title">Evidence</div>'
+            f'<ul class="decision-list">{evidence_items}</ul>'
+            '<div class="response-block-title">Next Step</div>'
+            f'<div>{html.escape(str(next_step))}</div>'
+            f"{timing_block}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def render_agent_monitor():
     workflow = get_json("/agents/workflow-status")
+    workflow_details = get_json("/agents/workflow/details")
     band_status = get_json("/agents/band/status")
-    band_chats = get_json("/agents/band/chats")
+    band_participants = get_json("/agents/band/participants")
 
     with st.container(border=True):
         st.markdown(
@@ -619,21 +1063,78 @@ def render_agent_monitor():
         if "error" in workflow:
             st.error(workflow["error"])
             return
+        if "error" in workflow_details:
+            workflow_details = workflow
 
-        completed_agents = sum(
-            1 for step in workflow["steps"] if step["status"] == "completed"
-        )
+        detail_steps = workflow_details.get("steps") or workflow["steps"]
+        completed_agents = sum(1 for step in detail_steps if step["status"] == "completed")
+        current_state = workflow_details.get("status") or workflow.get("current_state", "waiting")
+        workflow_thread = st.session_state.get("quasar_workflow_thread")
+        thread_alive = bool(workflow_thread and workflow_thread.is_alive())
+        if current_state in {"completed", "failed"} or (
+            current_state == "waiting" and not thread_alive
+        ):
+            st.session_state["quasar_workflow_running"] = False
         if band_status.get("status") == "connected":
             band_label = "🟢 Connected"
+            band_compact = "Connected"
         elif band_status.get("status") == "missing_credentials":
             band_label = "🟡 Config Missing"
+            band_compact = "Config Missing"
         else:
             band_label = "🔴 Disconnected"
+            band_compact = "Disconnected"
+
+        analysis_scope_label = st.radio(
+            "Analysis Scope",
+            ["MCX NATURALGAS", "Forex XAUUSD"],
+            horizontal=True,
+            key="analysis_scope",
+        )
+        analysis_scope = "FOREX" if analysis_scope_label == "Forex XAUUSD" else "MCX"
+        selected_scope = display_scope_label(analysis_scope)
+        selected_timezone = st.session_state.get("global_timezone", "UTC")
+        selected_preview = get_selected_market_preview(analysis_scope, selected_timezone)
+        render_selected_market_preview(selected_preview)
+
+        if st.button(
+            "Get Specialist Analysis",
+            key="run_quasar_band_workflow",
+            use_container_width=True,
+            type="primary",
+            disabled=bool(st.session_state.get("quasar_workflow_running")),
+        ):
+            post_json("/agents/workflow/reset")
+            st.session_state["quasar_band_workflow"] = {}
+            st.session_state["quasar_workflow_running"] = True
+            st.session_state["quasar_workflow_thread"] = start_workflow_thread(
+                analysis_scope
+            )
+            time.sleep(0.3)
+            st.rerun()
+
+        workflow_scope = str(workflow_details.get("analysis_scope") or "MCX").upper()
+        decision = final_decision_data(workflow_details, selected_scope)
+        workflow_matches_selection = workflow_scope == analysis_scope
+        if str(current_state).lower() == "waiting":
+            decision["decision_state"] = "Waiting"
+            decision["confidence"] = "Waiting"
+
         summary_cards = [
-            ("Workflow Progress", f"{workflow['progress']}%"),
-            ("Completed Agents", f"{completed_agents}/{len(workflow['steps'])}"),
-            ("Active Agent", workflow["current_agent"]),
-            ("Band Status", band_label),
+            ("Selected Market", selected_preview.get("scope", selected_scope)),
+            (
+                "Decision State",
+                str(decision.get("decision_state", "Waiting"))
+                if workflow_matches_selection
+                else "Waiting",
+            ),
+            (
+                "Confidence",
+                str(decision.get("confidence", "Waiting"))
+                if workflow_matches_selection
+                else "Waiting",
+            ),
+            ("Band Status", band_compact),
         ]
         summary_cols = st.columns(4)
         for col, (label, value) in zip(summary_cols, summary_cards):
@@ -648,12 +1149,21 @@ def render_agent_monitor():
                     unsafe_allow_html=True,
                 )
 
-        st.progress(workflow["progress"] / 100)
+        st.progress((workflow_details.get("progress", workflow["progress"]) or 0) / 100)
+        st.caption(
+            f"Run State: {str(current_state).title()} | "
+            f"Progress: {workflow_details.get('progress', workflow['progress'])}% | "
+            f"Completed Agents: {completed_agents}/{len(detail_steps)} | "
+            f"Band Status: {band_label}"
+        )
+
+        if str(current_state).lower() == "completed" and workflow_matches_selection:
+            render_final_decision_card(decision)
 
         display_names = {
             "Requirement Agent": "Requirement",
             "Market Intelligence Agent": "Market Intelligence",
-            "Architecture Agent": "Architecture",
+            "Architecture Agent": "System Readiness",
             "Risk Governance Agent": "Risk Governance",
             "Delivery Planning Agent": "Delivery Planning",
             "Final Review Agent": "Final Review",
@@ -664,96 +1174,69 @@ def render_agent_monitor():
             "waiting": "⏳ Waiting",
             "failed": "⚠ Failed",
         }
+        registry_agents = (
+            band_participants.get("registry", {}).get("agents", [])
+            if "error" not in band_participants
+            else []
+        )
+        registry_by_name = {
+            agent.get("agent_name"): agent for agent in registry_agents
+        }
         agent_cols = st.columns(6)
-        for col, step in zip(agent_cols, workflow["steps"]):
+        for col, step in zip(agent_cols, detail_steps):
             with col:
                 status_class = step["status"] if step["status"] in status_labels else "waiting"
+                registry_entry = registry_by_name.get(step["agent"], {})
+                band_badge = "Band ✓" if registry_entry.get("connected") else "Internal"
                 st.markdown(
                     (
                         f'<div class="agent-card {status_class}">'
                         f'<div class="agent-name">{html.escape(display_names.get(step["agent"], step["agent"]))}</div>'
                         f'<div class="agent-status">{html.escape(status_labels.get(step["status"], step["status"].title()))}</div>'
+                        f'<div class="agent-band-badge">{html.escape(band_badge)}</div>'
                         "</div>"
                     ),
                     unsafe_allow_html=True,
                 )
+                with st.expander("View Response", expanded=False):
+                    render_formatted_agent_response(step, selected_scope)
 
-        chat_count = band_chats.get("count", 0) if "error" not in band_chats else 0
-        last_test = st.session_state.get("band_workflow_test", {})
-        last_process = st.session_state.get("band_process_next", {})
-        workflow_band = workflow.get("band", {})
-        last_test_status = "Not run"
-        if last_test:
-            last_test_status = "Success" if last_test.get("success") else "Failed"
-        last_process_status = (
-            last_process.get("status")
-            or workflow_band.get("last_message_status")
-            or "not_run"
-        )
-        last_chat_id = last_process.get("chat_id") or workflow_band.get("last_chat_id") or "—"
-        last_message_id = (
-            last_process.get("message_id")
-            or workflow_band.get("last_message_id")
-            or "—"
-        )
-        last_response_time = last_test.get("response_time", "—")
-        latest_response = last_test.get("latest_message", "")
+        last_quasar_workflow = st.session_state.get("quasar_band_workflow", {})
+        if last_quasar_workflow:
+            if last_quasar_workflow.get("success"):
+                st.success("Quasar Band workflow completed.")
+            elif last_quasar_workflow.get("status") == "no_messages":
+                st.info("No pending Band workflow message.")
+            else:
+                st.warning(
+                    last_quasar_workflow.get("error")
+                    or last_quasar_workflow.get("message")
+                    or "Quasar Band workflow did not complete."
+                )
 
-        st.markdown(
-            (
-                '<div class="band-test-card">'
-                '<div class="band-test-title">Band Workflow Test</div>'
-                '<div class="band-test-row">'
-                f'<span class="band-test-pill">Band Connected: {html.escape("Yes" if band_status.get("status") == "connected" else "No")}</span>'
-                f'<span class="band-test-pill">Chat Rooms Available: {html.escape(str(chat_count))}</span>'
-                f'<span class="band-test-pill">Last Workflow Test: {html.escape(last_test_status)}</span>'
-                f'<span class="band-test-pill">Last Band Processing Status: {html.escape(str(last_process_status))}</span>'
-                f'<span class="band-test-pill">Last Chat ID: {html.escape(str(last_chat_id))}</span>'
-                f'<span class="band-test-pill">Last Message ID: {html.escape(str(last_message_id))}</span>'
-                f'<span class="band-test-pill">Last Response Time: {html.escape(last_response_time)}</span>'
-                "</div>"
-                "</div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        if st.button("Run Band Test", key="run_band_test", use_container_width=True):
-            st.session_state["band_workflow_test"] = post_json(
-                "/agents/band/test-workflow"
-            )
-            st.rerun()
-        if st.button(
-            "Process Next Band Message",
-            key="process_next_band_message",
-            use_container_width=True,
+        failed_steps = [step for step in detail_steps if step.get("status") == "failed"]
+        has_failure = bool(failed_steps) or str(current_state).lower() == "failed"
+        if has_failure:
+            diagnostics = workflow_details.get("delivery_pack", {}).get("diagnostics", {})
+            failed_agent = failed_steps[0] if failed_steps else {}
+            with st.expander("Advanced Diagnostics", expanded=False):
+                st.write(f"Workflow ID: {workflow_details.get('workflow_id', '—')}")
+                st.write(f"Chat ID: {workflow_details.get('chat_id') or diagnostics.get('band_chat_id') or '—'}")
+                st.write(f"Message ID: {workflow_details.get('message_id') or diagnostics.get('source_message_id') or '—'}")
+                st.write(f"Failed Agent: {failed_agent.get('agent', '—')}")
+                st.write(
+                    "Error Reason: "
+                    f"{failed_agent.get('summary') or last_quasar_workflow.get('error') or 'Unknown'}"
+                )
+                st.write(f"Scanned Message Count: {failed_agent.get('scanned_message_count', '—')}")
+
+        if (
+            st.session_state.get("quasar_workflow_running")
+            or current_state == "running"
+            or thread_alive
         ):
-            st.session_state["band_process_next"] = post_json(
-                "/agents/band/process-next"
-            )
+            time.sleep(1.5)
             st.rerun()
-
-        if last_process:
-            process_status = last_process.get("status", "unknown")
-            if process_status == "processed":
-                st.success("Band message processed.")
-            elif process_status == "no_messages":
-                st.info("No pending Band messages.")
-            else:
-                st.warning(last_process.get("error", "Band processing did not complete."))
-
-        if last_test:
-            if last_test.get("success"):
-                st.success("Band workflow test completed.")
-            else:
-                st.warning(last_test.get("message", "Band workflow test did not complete."))
-            st.markdown(
-                (
-                    '<div class="band-response">'
-                    f'<strong>Chat ID:</strong> {html.escape(str(last_test.get("chat_id", "—")))}<br>'
-                    f'<strong>Latest Band Response:</strong> {html.escape(str(latest_response or "No response text returned."))}'
-                    "</div>"
-                ),
-                unsafe_allow_html=True,
-            )
 
 
 if page == "Live Market Intelligence":
@@ -827,13 +1310,13 @@ else:
 
     st.divider()
 
-    st.subheader("Enterprise Delivery Pack")
+    st.subheader("Enterprise Review Notes")
     st.markdown(
         """
         ### Requirement Summary
         Build a regulated financial AI delivery platform with live MCX and Forex intelligence.
 
-        ### Architecture Summary
+        ### System Readiness Summary
         FastAPI, Streamlit, TimescaleDB, Docker, Band agents, and AWS deployment.
 
         ### Governance Summary
