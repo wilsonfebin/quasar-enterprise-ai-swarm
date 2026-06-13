@@ -16,7 +16,20 @@ BAND_PEERS_ENDPOINT = "/peers"  # GET /agent/peers: recruitable peers
 BAND_CONVERSATIONS_ENDPOINT = "/chats"  # GET /agent/chats: agent chat rooms
 BAND_CHAT_DETAILS_ENDPOINT = "/chats/{chat_id}"  # GET /agent/chats/{id}
 BAND_MESSAGES_ENDPOINT = "/chats/{chat_id}/messages"  # GET/POST messages
+BAND_NEXT_MESSAGE_ENDPOINT = (
+    "/chats/{chat_id}/messages/next"  # GET startup-sync backlog item
+)
+BAND_MESSAGE_PROCESSING_ENDPOINT = (
+    "/chats/{chat_id}/messages/{message_id}/processing"  # POST processing ack
+)
+BAND_MESSAGE_PROCESSED_ENDPOINT = (
+    "/chats/{chat_id}/messages/{message_id}/processed"  # POST processed ack
+)
+BAND_MESSAGE_FAILED_ENDPOINT = (
+    "/chats/{chat_id}/messages/{message_id}/failed"  # POST failed ack
+)
 BAND_EVENTS_ENDPOINT = "/chats/{chat_id}/events"  # POST tool/thought events
+BAND_CONTEXT_ENDPOINT = "/chats/{chat_id}/context"  # GET rehydration context
 BAND_PARTICIPANTS_ENDPOINT = (
     "/chats/{chat_id}/participants"  # GET/POST chat participants
 )
@@ -160,6 +173,38 @@ class BandClient:
         limit: int = 20,
     ) -> dict[str, Any]:
         return self.get_messages(chat_id=chat_id, status=status, limit=limit)
+
+    def get_next_message(self, chat_id: str) -> dict[str, Any]:
+        append_log("band.log", "Band next message check")
+        return self._request("GET", BAND_NEXT_MESSAGE_ENDPOINT.format(chat_id=chat_id))
+
+    def mark_message_processing(self, chat_id: str, message_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            BAND_MESSAGE_PROCESSING_ENDPOINT.format(
+                chat_id=chat_id, message_id=message_id
+            ),
+        )
+
+    def mark_message_processed(self, chat_id: str, message_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            BAND_MESSAGE_PROCESSED_ENDPOINT.format(
+                chat_id=chat_id, message_id=message_id
+            ),
+        )
+
+    def mark_message_failed(
+        self, chat_id: str, message_id: str, error: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            BAND_MESSAGE_FAILED_ENDPOINT.format(chat_id=chat_id, message_id=message_id),
+            body={"error": error},
+        )
+
+    def get_chat_context(self, chat_id: str) -> dict[str, Any]:
+        return self._request("GET", BAND_CONTEXT_ENDPOINT.format(chat_id=chat_id))
 
     def send_message(
         self,

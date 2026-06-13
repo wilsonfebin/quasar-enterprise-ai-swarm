@@ -8,6 +8,7 @@ from app.agents.band_client import (
     utc_now_iso,
 )
 from app.agents.workflow_service import WorkflowService
+from app.agents.workflow_service import get_band_processing_state
 from app.data.ingestion_service import append_log
 
 router = APIRouter()
@@ -15,6 +16,8 @@ router = APIRouter()
 
 @router.get("/workflow-status")
 def workflow_status():
+    band_status = band_config_status()
+    band_status.update(get_band_processing_state())
     return {
         "workflow_id": "quasar-delivery-swarm-001",
         "current_agent": "Market Intelligence Agent",
@@ -55,7 +58,7 @@ def workflow_status():
             "Requirement Agent → Market Intelligence Agent",
             "Market Intelligence Agent analyzing live market context",
         ],
-        "band": band_config_status(),
+        "band": band_status,
     }
 
 
@@ -150,3 +153,8 @@ def band_test_workflow():
 @router.get("/band/debug-last-response")
 def band_debug_last_response():
     return get_last_band_debug_response()
+
+
+@router.post("/band/process-next")
+def band_process_next():
+    return WorkflowService().process_next_band_message()

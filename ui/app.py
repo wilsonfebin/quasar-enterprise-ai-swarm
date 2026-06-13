@@ -680,9 +680,22 @@ def render_agent_monitor():
 
         chat_count = band_chats.get("count", 0) if "error" not in band_chats else 0
         last_test = st.session_state.get("band_workflow_test", {})
+        last_process = st.session_state.get("band_process_next", {})
+        workflow_band = workflow.get("band", {})
         last_test_status = "Not run"
         if last_test:
             last_test_status = "Success" if last_test.get("success") else "Failed"
+        last_process_status = (
+            last_process.get("status")
+            or workflow_band.get("last_message_status")
+            or "not_run"
+        )
+        last_chat_id = last_process.get("chat_id") or workflow_band.get("last_chat_id") or "—"
+        last_message_id = (
+            last_process.get("message_id")
+            or workflow_band.get("last_message_id")
+            or "—"
+        )
         last_response_time = last_test.get("response_time", "—")
         latest_response = last_test.get("latest_message", "")
 
@@ -694,6 +707,9 @@ def render_agent_monitor():
                 f'<span class="band-test-pill">Band Connected: {html.escape("Yes" if band_status.get("status") == "connected" else "No")}</span>'
                 f'<span class="band-test-pill">Chat Rooms Available: {html.escape(str(chat_count))}</span>'
                 f'<span class="band-test-pill">Last Workflow Test: {html.escape(last_test_status)}</span>'
+                f'<span class="band-test-pill">Last Band Processing Status: {html.escape(str(last_process_status))}</span>'
+                f'<span class="band-test-pill">Last Chat ID: {html.escape(str(last_chat_id))}</span>'
+                f'<span class="band-test-pill">Last Message ID: {html.escape(str(last_message_id))}</span>'
                 f'<span class="band-test-pill">Last Response Time: {html.escape(last_response_time)}</span>'
                 "</div>"
                 "</div>"
@@ -705,6 +721,24 @@ def render_agent_monitor():
                 "/agents/band/test-workflow"
             )
             st.rerun()
+        if st.button(
+            "Process Next Band Message",
+            key="process_next_band_message",
+            use_container_width=True,
+        ):
+            st.session_state["band_process_next"] = post_json(
+                "/agents/band/process-next"
+            )
+            st.rerun()
+
+        if last_process:
+            process_status = last_process.get("status", "unknown")
+            if process_status == "processed":
+                st.success("Band message processed.")
+            elif process_status == "no_messages":
+                st.info("No pending Band messages.")
+            else:
+                st.warning(last_process.get("error", "Band processing did not complete."))
 
         if last_test:
             if last_test.get("success"):
