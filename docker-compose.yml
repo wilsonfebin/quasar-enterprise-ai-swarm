@@ -29,6 +29,10 @@ services:
       ZERODHA_API_KEY: ${ZERODHA_API_KEY:-}
       ZERODHA_ACCESS_TOKEN: ${ZERODHA_ACCESS_TOKEN:-}
       TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
+      BAND_ENABLED: ${BAND_ENABLED:-false}
+      BAND_AGENT_ID: ${BAND_AGENT_ID:-}
+      BAND_API_KEY: ${BAND_API_KEY:-}
+      BAND_BASE_URL: ${BAND_BASE_URL:-}
     depends_on:
       db:
         condition: service_healthy

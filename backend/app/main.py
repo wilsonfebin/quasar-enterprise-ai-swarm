@@ -23,12 +23,21 @@ def seed_day_1_mock_data():
     zerodha_configured = bool(
         os.getenv("ZERODHA_API_KEY", "") and os.getenv("ZERODHA_ACCESS_TOKEN", "")
     )
+    band_enabled = os.getenv("BAND_ENABLED", "false")
+    band_configured = bool(
+        band_enabled.lower() == "true"
+        and os.getenv("BAND_AGENT_ID", "")
+        and os.getenv("BAND_API_KEY", "")
+        and os.getenv("BAND_BASE_URL", "")
+    )
     append_log(
         "backend.log",
         (
             f"USE_MOCK_DATA={os.getenv('USE_MOCK_DATA', 'true')} "
             f"TWELVEDATA configured: {str(twelvedata_configured).lower()} "
-            f"ZERODHA configured: {str(zerodha_configured).lower()}"
+            f"ZERODHA configured: {str(zerodha_configured).lower()} "
+            f"BAND_ENABLED={band_enabled} "
+            f"BAND configured: {str(band_configured).lower()}"
         ),
     )
 

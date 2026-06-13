@@ -259,6 +259,40 @@ st.markdown(
         opacity: 0.82;
         margin-top: 0.2rem;
     }
+    .band-test-card {
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.025);
+        padding: 0.55rem 0.65rem;
+        margin-top: 0.65rem;
+    }
+    .band-test-title {
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 0.35rem;
+    }
+    .band-test-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin-bottom: 0.35rem;
+    }
+    .band-test-pill {
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.035);
+        padding: 0.16rem 0.42rem;
+        font-size: 0.72rem;
+        line-height: 1.25;
+    }
+    .band-response {
+        border-left: 3px solid rgba(56, 139, 253, 0.55);
+        padding-left: 0.5rem;
+        margin-top: 0.35rem;
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+    }
     div[data-testid="stVerticalBlockBorderWrapper"] {
         border-color: rgba(255, 255, 255, 0.10);
         background: rgba(255, 255, 255, 0.015);
@@ -573,6 +607,8 @@ def render_market_card(title, market_type, instrument, timezone_name):
 
 def render_agent_monitor():
     workflow = get_json("/agents/workflow-status")
+    band_status = get_json("/agents/band/status")
+    band_chats = get_json("/agents/band/chats")
 
     with st.container(border=True):
         st.markdown(
@@ -587,12 +623,19 @@ def render_agent_monitor():
         completed_agents = sum(
             1 for step in workflow["steps"] if step["status"] == "completed"
         )
+        if band_status.get("status") == "connected":
+            band_label = "🟢 Connected"
+        elif band_status.get("status") == "missing_credentials":
+            band_label = "🟡 Config Missing"
+        else:
+            band_label = "🔴 Disconnected"
         summary_cards = [
             ("Workflow Progress", f"{workflow['progress']}%"),
             ("Completed Agents", f"{completed_agents}/{len(workflow['steps'])}"),
             ("Active Agent", workflow["current_agent"]),
+            ("Band Status", band_label),
         ]
-        summary_cols = st.columns(3)
+        summary_cols = st.columns(4)
         for col, (label, value) in zip(summary_cols, summary_cards):
             with col:
                 st.markdown(
@@ -634,6 +677,49 @@ def render_agent_monitor():
                     ),
                     unsafe_allow_html=True,
                 )
+
+        chat_count = band_chats.get("count", 0) if "error" not in band_chats else 0
+        last_test = st.session_state.get("band_workflow_test", {})
+        last_test_status = "Not run"
+        if last_test:
+            last_test_status = "Success" if last_test.get("success") else "Failed"
+        last_response_time = last_test.get("response_time", "—")
+        latest_response = last_test.get("latest_message", "")
+
+        st.markdown(
+            (
+                '<div class="band-test-card">'
+                '<div class="band-test-title">Band Workflow Test</div>'
+                '<div class="band-test-row">'
+                f'<span class="band-test-pill">Band Connected: {html.escape("Yes" if band_status.get("status") == "connected" else "No")}</span>'
+                f'<span class="band-test-pill">Chat Rooms Available: {html.escape(str(chat_count))}</span>'
+                f'<span class="band-test-pill">Last Workflow Test: {html.escape(last_test_status)}</span>'
+                f'<span class="band-test-pill">Last Response Time: {html.escape(last_response_time)}</span>'
+                "</div>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        if st.button("Run Band Test", key="run_band_test", use_container_width=True):
+            st.session_state["band_workflow_test"] = post_json(
+                "/agents/band/test-workflow"
+            )
+            st.rerun()
+
+        if last_test:
+            if last_test.get("success"):
+                st.success("Band workflow test completed.")
+            else:
+                st.warning(last_test.get("message", "Band workflow test did not complete."))
+            st.markdown(
+                (
+                    '<div class="band-response">'
+                    f'<strong>Chat ID:</strong> {html.escape(str(last_test.get("chat_id", "—")))}<br>'
+                    f'<strong>Latest Band Response:</strong> {html.escape(str(latest_response or "No response text returned."))}'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 if page == "Live Market Intelligence":
