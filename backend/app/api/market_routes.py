@@ -28,6 +28,10 @@ from app.db import (
     fetch_latest_market_snapshot,
     fetch_market_candles,
 )
+from app.intelligence.multi_timeframe_engine import (
+    build_intelligence_evolution,
+    build_multi_timeframe_snapshot,
+)
 
 router = APIRouter()
 HIGHER_TIMEFRAMES = {"1H", "4H"}
@@ -360,6 +364,66 @@ def market_candle_health(
     }
 
 
+@router.get("/intelligence/multi-timeframe")
+def market_multi_timeframe_intelligence(
+    market_type: str = Query("FOREX"),
+    instrument: str = Query("XAUUSD"),
+    selected_timeframe: str = Query("1m"),
+):
+    try:
+        return build_multi_timeframe_snapshot(
+            market_type=market_type,
+            instrument=instrument,
+            selected_timeframe=selected_timeframe,
+        )
+    except DatabaseUnavailable as exc:
+        return {
+            "status": "DB_UNAVAILABLE",
+            "message": str(exc),
+            "market_type": market_type.upper(),
+            "instrument": instrument.upper(),
+            "selected_timeframe": selected_timeframe,
+            "timeframes": {},
+            "alignment": {},
+            "decision": {
+                "state": "WAIT",
+                "confidence": 0,
+                "reason": "Database unavailable.",
+                "next_validation": "Restore database connectivity.",
+            },
+        }
+
+
+@router.get("/intelligence/evolution")
+def market_intelligence_evolution(
+    market_type: str = Query("FOREX"),
+    instrument: str = Query("XAUUSD"),
+    selected_timeframe: str = Query("1m"),
+):
+    try:
+        return build_intelligence_evolution(
+            market_type=market_type,
+            instrument=instrument,
+            selected_timeframe=selected_timeframe,
+        )
+    except DatabaseUnavailable as exc:
+        return {
+            "status": "DB_UNAVAILABLE",
+            "message": str(exc),
+            "market_type": market_type.upper(),
+            "instrument": instrument.upper(),
+            "selected_timeframe": selected_timeframe,
+            "evolution": {
+                "has_previous": False,
+                "summary": "No previous intelligence snapshot available yet.",
+                "regime_change": {"previous": "", "current": "", "changed": False},
+                "decision_change": {"previous": "", "current": "", "changed": False},
+                "timeframe_changes": [],
+                "confidence_change": {"previous": None, "current": 0, "delta": None},
+            },
+        }
+
+
 @router.post("/sanity-check")
 def market_sanity_check(payload: dict = Body(default={})):
     market_type = str(payload.get("market_type", "FOREX")).upper()
@@ -375,18 +439,24 @@ def market_sanity_check(payload: dict = Body(default={})):
     coverage = coverage_bucket(health.get("coverage_percent", 0))
     status = health.get("status", "warning")
     largest_gap = int(health.get("largest_gap_minutes", 0) or 0)
+    readiness = coverage
     if health.get("total_candles", 0) == 0:
-        recommendation = "Backfill at least 7 trading days before relying on specialist review."
+        recommendation = "Configure provider credentials and run backfill."
         status = "critical" if health.get("market_open") else "warning"
+        readiness = "Not Ready"
     elif largest_gap > 180:
-        recommendation = "Backfill missing candle gaps before relying on specialist review."
+        recommendation = "Run backfill before relying on multi-timeframe analysis."
         status = "warning"
+        readiness = "Moderate" if coverage in {"Strong", "Moderate"} else "Weak"
     elif coverage in {"None", "Low"}:
         recommendation = "Backfill at least 7 trading days before relying on specialist review."
+        readiness = "Weak"
     elif coverage == "Moderate":
         recommendation = "Backfill toward 30 days for stronger specialist review."
+        readiness = "Moderate"
     else:
-        recommendation = "Candle history is sufficient for review."
+        recommendation = "Ready for specialist review."
+        readiness = "Strong"
     return {
         "status": status,
         "instrument": instrument,
@@ -394,9 +464,13 @@ def market_sanity_check(payload: dict = Body(default={})):
         "timeframe": timeframe,
         "available_candles": health.get("total_candles", 0),
         "coverage": coverage,
+        "coverage_label": coverage,
         "largest_gap_minutes": largest_gap,
+        "largest_unexpected_gap_minutes": largest_gap,
+        "analysis_readiness": readiness,
         "missing_ranges": health.get("missing_ranges", []),
         "recommendation": recommendation,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

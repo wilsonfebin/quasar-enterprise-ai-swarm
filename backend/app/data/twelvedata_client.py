@@ -2,7 +2,6 @@ import os
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 from urllib.request import urlopen
-from zoneinfo import ZoneInfo
 
 
 class TwelveDataCredentialsMissing(RuntimeError):
@@ -62,10 +61,9 @@ class TwelveDataClient:
         raw_datetime = value["datetime"]
         ts = datetime.fromisoformat(raw_datetime)
         if ts.tzinfo is None:
-            try:
-                ts = ts.replace(tzinfo=ZoneInfo(self.exchange_timezone))
-            except Exception:
-                ts = ts.replace(tzinfo=timezone.utc)
+            # The request asks TwelveData for timezone=UTC. Latest responses can
+            # still arrive without a tz suffix, so interpret naive values as UTC.
+            ts = ts.replace(tzinfo=timezone.utc)
         ts = ts.astimezone(timezone.utc)
         timestamp_corrected = False
         timestamp_correction_reason = ""

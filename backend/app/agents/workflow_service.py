@@ -7,6 +7,23 @@ from app.agents.band_client import BandClient, record_band_debug_response, utc_n
 from app.agents.band_registry import BandAgentRegistry, BandAgentRegistration
 from app.data.ingestion_service import append_log
 from app.db import DatabaseUnavailable, fetch_latest_market_snapshot
+from app.intelligence.multi_timeframe_engine import (
+    build_multi_timeframe_snapshot,
+    compact_multi_timeframe_summary,
+)
+from app.services.governance_evidence_service import (
+    build_governance_evidence,
+    governance_evidence_references_text,
+)
+from app.services.specialist_brief_builder import (
+    build_specialist_brief,
+    format_specialist_brief_text,
+    is_raw_label_repetition,
+)
+from app.services.specialist_response_store import (
+    save_final_review_response,
+    save_specialist_response,
+)
 
 
 WORKFLOW_STEPS = [
@@ -31,6 +48,8 @@ def _initial_workflow_steps() -> list[dict[str, Any]]:
             "response_text": "",
             "response_preview": "",
             "response_received": False,
+            "specialist_brief": {},
+            "response_source": "",
             "started_at": "",
             "completed_at": "",
             "duration_seconds": None,
@@ -82,17 +101,29 @@ def get_workflow_state() -> dict[str, Any]:
 def get_workflow_details() -> dict[str, Any]:
     steps = WORKFLOW_STATE["steps"]
     workflow_status = WORKFLOW_STATE.get("status", "waiting")
+    completed_specialists = sum(1 for step in steps if step.get("status") == "completed")
+    final_review_completed = any(
+        step.get("agent") == "Final Review Agent" and step.get("status") == "completed"
+        for step in steps
+    )
     return {
         "workflow_id": WORKFLOW_STATE["workflow_id"],
+        "workflow_run_id": WORKFLOW_STATE["workflow_id"],
         "status": workflow_status,
         "current_state": workflow_status,
+        "specialist_workflow_running": workflow_status == "running",
+        "completed_specialists": completed_specialists,
+        "completed_count": completed_specialists,
+        "total_specialists": len(steps) or len(WORKFLOW_STEPS),
+        "total_count": len(steps) or len(WORKFLOW_STEPS),
+        "final_review_completed": final_review_completed,
         "active_agent": WORKFLOW_STATE.get("current_agent", ""),
         "progress": WORKFLOW_STATE.get("progress", 0),
         "chat_id": WORKFLOW_STATE.get("chat_id", ""),
             "message_id": WORKFLOW_STATE.get("message_id", ""),
             "analysis_scope": WORKFLOW_STATE.get("analysis_scope", "MCX"),
             "orchestration_mode": WORKFLOW_STATE.get("orchestration_mode", "internal"),
-        "completed_agents": sum(1 for step in steps if step.get("status") == "completed"),
+        "completed_agents": completed_specialists,
         "execution_time_seconds": _workflow_execution_time(steps),
         "timeline": _workflow_timeline(steps),
         "steps": steps,
@@ -128,6 +159,8 @@ def update_workflow_step(
     prompt_sent: str | None = None,
     response_text: str | None = None,
     response_received: bool | None = None,
+    specialist_brief: dict[str, Any] | None = None,
+    response_source: str | None = None,
 ) -> dict[str, Any]:
     now = utc_now_iso()
     for step in WORKFLOW_STATE["steps"]:
@@ -152,6 +185,10 @@ def update_workflow_step(
                 updates["response_preview"] = _clean_preview(response_text)
             if response_received is not None:
                 updates["response_received"] = response_received
+            if specialist_brief is not None:
+                updates["specialist_brief"] = specialist_brief
+            if response_source is not None:
+                updates["response_source"] = response_source
             step.update(updates)
             break
 
@@ -294,6 +331,72 @@ def summarize_market_context_for_band(context: dict[str, Any]) -> str:
     def fmt_bias(value: str) -> str:
         return str(value or "NEUTRAL").replace("_", " ").title()
 
+    def fmt_state(value: Any, fallback: str = "Unavailable") -> str:
+        return str(value or fallback).replace("_", " ").title()
+
+    def primary_scenario_line(mtf_snapshot: dict[str, Any]) -> str:
+        primary = ((mtf_snapshot.get("scenarios") or {}).get("primary_scenario") or {})
+        secondary = ((mtf_snapshot.get("scenarios") or {}).get("secondary_scenario") or {})
+        if not primary:
+            return "Primary scenario unavailable"
+        line = f"{primary.get('name', 'Scenario unavailable')} ({primary.get('probability', 0)}%)"
+        if secondary:
+            line = (
+                f"{line}; alternative {secondary.get('name', 'Unavailable')} "
+                f"({secondary.get('probability', 0)}%)"
+            )
+        return line
+
+    def hierarchy_line(mtf_snapshot: dict[str, Any]) -> str:
+        hierarchy = mtf_snapshot.get("timeframe_hierarchy") or {}
+        if not hierarchy:
+            return "Hierarchy unavailable"
+        return (
+            f"{hierarchy.get('dominant_context', 'Unknown')}; "
+            f"conflict {hierarchy.get('hierarchy_conflict', 'Unknown')}; "
+            f"bias {hierarchy.get('scenario_bias', 'Unknown')}"
+        )
+
+    def memory_line(mtf_snapshot: dict[str, Any]) -> str:
+        memory = mtf_snapshot.get("memory") or {}
+        evolution = mtf_snapshot.get("evolution") or {}
+        parts = []
+        if memory:
+            parts.append(f"memory status {memory.get('status', 'unknown')}")
+        if evolution:
+            parts.append(str(evolution.get("summary") or "evolution snapshot available"))
+        return "; ".join(parts) if parts else "Memory and persistence unavailable"
+
+    def validation_line(mtf_snapshot: dict[str, Any]) -> str:
+        decision = mtf_snapshot.get("decision") or {}
+        next_validation = decision.get("next_validation")
+        if next_validation:
+            return str(next_validation)
+        triggers = mtf_snapshot.get("validation_triggers") or {}
+        conditions = triggers.get("wait_conditions") or []
+        return "; ".join(str(item) for item in conditions[:2]) or "Wait for confirmation."
+
+    def intelligence_artifact_lines(mtf_snapshot: dict[str, Any]) -> list[str]:
+        if not mtf_snapshot:
+            return ["Quasar Intelligence Artifacts:", "- Multi-timeframe intelligence unavailable."]
+        decision = mtf_snapshot.get("decision") or {}
+        narrative = mtf_snapshot.get("narrative") or {}
+        evidence_text = governance_evidence_references_text(
+            build_governance_evidence(get_workflow_details(), context)
+        )
+        return [
+            "Quasar Intelligence Artifacts:",
+            f"- Market Regime: {fmt_state(mtf_snapshot.get('regime'))}",
+            f"- Decision State: {decision.get('state', 'WAIT')}",
+            f"- Scenario Engine: {primary_scenario_line(mtf_snapshot)}",
+            f"- Timeframe Hierarchy: {hierarchy_line(mtf_snapshot)}",
+            f"- Market Memory / Persistence: {memory_line(mtf_snapshot)}",
+            f"- Validation Conditions: {validation_line(mtf_snapshot)}",
+            f"- Executive Narrative: {narrative.get('summary', 'Narrative unavailable.')}",
+            "- Governance Evidence:",
+            *[f"  {line}" for line in evidence_text.splitlines()[1:]],
+        ]
+
     def label_lines(labels: list[dict[str, Any]]) -> list[str]:
         if not labels:
             return ["  - No current structure labels"]
@@ -319,19 +422,33 @@ def summarize_market_context_for_band(context: dict[str, Any]) -> str:
                 f"C {fmt_price(candle.get('close'), decimals)} "
                 f"Vol {fmt_volume(candle.get('volume'))}"
             ),
-            "Top Labels:",
+            "Supporting Signals:",
             *[line.replace("  - ", "- ") for line in label_lines(market.get("labels", []))],
             f"Dominant Bias: {fmt_bias(market.get('dominant_bias', 'NEUTRAL'))}",
             f"Session: {market.get('session', 'Unknown')}",
             f"Data Age: {market.get('data_age', 'unknown')}",
             f"Source: {market.get('source', 'unknown') or 'unknown'}",
-            "Safety: Advisory-only. No orders. No buy/sell signals.",
+            "Safety: Advisory-only. Execution disabled. No directional calls.",
         ]
 
     scope = str(context.get("analysis_scope", "MCX")).upper()
     if scope == "FOREX":
-        return "\n".join(focused_market_block(context.get("forex", {}), "Forex", 5))
-    return "\n".join(focused_market_block(context.get("mcx", {}), "MCX", 2))
+        lines = focused_market_block(context.get("forex", {}), "Forex", 5)
+    else:
+        lines = focused_market_block(context.get("mcx", {}), "MCX", 2)
+
+    mtf_snapshot = context.get("multi_timeframe")
+    if mtf_snapshot:
+        lines.extend(
+            [
+                "",
+                *intelligence_artifact_lines(mtf_snapshot),
+                "",
+                "Detailed Multi-Timeframe Diagnostics:",
+                compact_multi_timeframe_summary(mtf_snapshot),
+            ]
+        )
+    return "\n".join(lines)
 
 
 class WorkflowService:
@@ -724,6 +841,11 @@ class WorkflowService:
             },
         }
         if scope == "FOREX":
+            context["multi_timeframe"] = self._multi_timeframe_context(
+                "FOREX",
+                forex.get("instrument", "XAUUSD"),
+                timeframe,
+            )
             context["forex"] = {
                 "instrument": forex.get("instrument", "XAUUSD"),
                 "source": forex.get("source", ""),
@@ -736,6 +858,11 @@ class WorkflowService:
                 "session": self._market_session("FOREX"),
             }
         else:
+            context["multi_timeframe"] = self._multi_timeframe_context(
+                "MCX",
+                mcx.get("instrument", "NATURALGAS"),
+                timeframe,
+            )
             context["mcx"] = {
                 "instrument": mcx.get("instrument", "NATURALGAS"),
                 "source": mcx.get("source", ""),
@@ -748,6 +875,22 @@ class WorkflowService:
                 "session": self._market_session("MCX"),
             }
         return context
+
+    def _multi_timeframe_context(
+        self,
+        market_type: str,
+        instrument: str,
+        selected_timeframe: str,
+    ) -> dict[str, Any]:
+        try:
+            return build_multi_timeframe_snapshot(
+                market_type=market_type,
+                instrument=instrument,
+                selected_timeframe=selected_timeframe,
+            )
+        except Exception as exc:
+            append_log("backend.log", f"Multi-timeframe context unavailable: {exc}")
+            return {}
 
     def summarize_market_context_for_band(self, context: dict[str, Any]) -> str:
         return summarize_market_context_for_band(context)
@@ -808,7 +951,7 @@ class WorkflowService:
             (
                 "Risk Governance Agent",
                 "Risk Governance Agent validated advisory-only and no-execution controls",
-                "Validated advisory-only, no-orders, and no buy/sell signal controls.",
+                "Validated advisory-only, execution-disabled, and no directional-call controls.",
             ),
             (
                 "Delivery Planning Agent",
@@ -865,9 +1008,18 @@ class WorkflowService:
             mentions=mentions,
         )
         if final_response.get("status") == "error":
-            raise RuntimeError(final_response.get("message", "Final Band response failed"))
+            append_log(
+                "band.log",
+                "Quasar final response send failed; retaining local workflow summary",
+            )
+            final_response = {
+                **final_response,
+                "status": "local_fallback",
+                "message": final_response.get("message", "Final Band response failed"),
+            }
+        else:
+            append_log("band.log", "Quasar final response sent")
 
-        append_log("band.log", "Quasar final response sent")
         WORKFLOW_STATE.update(
             {
                 "current_agent": "Final Review Agent",
@@ -1222,49 +1374,56 @@ class WorkflowService:
         scope_label = context.get("scope_label", self._scope_label(analysis_scope))
         prompts = {
             "Requirement Agent": (
-                "Analyze the user's decision-support request for the selected "
-                "scope only. Identify instrument, timeframe, objective, and "
-                "safety boundaries.\n"
+                "Requirement Specialist: define the market question being evaluated "
+                "for the selected scope only. Use Quasar intelligence artifacts first: "
+                "market regime, scenario engine, timeframe hierarchy, market memory, "
+                "persistence, validation conditions, and governance evidence. Avoid "
+                "restating raw labels unless they materially change the question.\n"
                 f"Selected scope: {scope_label}\n"
                 f"User request: {incoming_content}\n\n"
                 f"{context_summary}"
             ),
             "Market Intelligence Agent": (
-                "Interpret only the selected instrument context. Do not discuss "
-                "other markets. Assess bias, conflict, confidence, and whether "
-                "structure supports watch, wait, or validate.\n"
+                "Market Intelligence Specialist: produce a dominant market thesis, "
+                "an alternative thesis, and the supporting/contradicting evidence. "
+                "Use regime, scenario engine, timeframe hierarchy, market memory, "
+                "persistence, validation conditions, and governance evidence before "
+                "raw labels. Do not discuss other markets.\n"
                 f"Selected scope: {scope_label}\n\n"
                 f"{context_summary}"
             ),
             "Architecture Agent": (
-                "System Readiness Agent: Assess data readiness for selected "
-                "instrument only. Check data age, session, mock/live source, "
-                "timeframe, and confidence quality.\n"
+                "System Readiness Specialist: assess whether Quasar intelligence is "
+                "fresh and usable for institutional decision support. Review session "
+                "state, feed/source quality, evidence completeness, hierarchy/scenario "
+                "availability, and governance evidence. Avoid repeating labels.\n"
                 f"Selected scope: {scope_label}\n\n"
                 f"{context_summary}"
             ),
             "Risk Governance Agent": (
-                "Create guardrails for selected instrument context only. "
-                "Identify conditions where the user must wait, avoid action, or "
-                "require confirmation. Do not provide directional instructions.\n"
+                "Risk Governance Specialist: assess confidence risk, conflict risk, "
+                "and validation risk for the selected instrument only. Tie guardrails "
+                "to regime, scenario/hierarchy disagreement, market memory/persistence, "
+                "validation conditions, and governance evidence. Do not provide "
+                "directional execution instructions.\n"
                 f"Selected scope: {scope_label}\n\n"
                 f"{context_summary}"
             ),
             "Delivery Planning Agent": (
-                "Create next-step decision plan for selected instrument only: "
-                "wait, watch, validate higher timeframe, check next candle close, "
-                "or monitor liquidity sweep confirmation. No execution guidance.\n"
+                "Delivery Planning Specialist: produce a validation roadmap for the "
+                "selected instrument only. Explain what evidence is required next, "
+                "which scenario must validate or invalidate, and how hierarchy, "
+                "persistence, memory, and governance evidence should be refreshed. "
+                "No execution guidance.\n"
                 f"Selected scope: {scope_label}\n\n"
                 f"{context_summary}"
             ),
             "Final Review Agent": (
-                "Produce final decision-support review for selected instrument only:\n"
-                "- Market state\n"
-                "- Evidence\n"
-                "- Confidence\n"
-                "- Decision state: WAIT / WATCH / VALIDATE / CONFLICTED\n"
-                "- Next validation step\n"
-                "- Safety note\n\n"
+                "Final Review Specialist: produce an institutional market briefing "
+                "for the selected instrument only. Include executive assessment, "
+                "dominant hypothesis, alternative hypothesis, and why the current "
+                "decision state exists. Prefer regime, scenario, hierarchy, memory, "
+                "persistence, validation, and governance evidence over raw label lists.\n\n"
                 f"Selected scope: {scope_label}\n"
                 f"{context_summary}"
             ),
@@ -1311,22 +1470,45 @@ class WorkflowService:
                 error = specialist_message.get(
                     "message", f"Unable to message {agent} over Band"
                 )
-                update_workflow_step(
-                    agent,
-                    "failed",
-                    error,
-                    prompt_sent=prompts[agent],
-                    response_text="",
-                    response_received=False,
-                )
-                append_log("band.log", f"{agent} specialist message failed")
+                specialist_brief = {
+                    **build_specialist_brief(agent, context),
+                    "response_source": "quasar_brief_fallback",
+                    "fallback_reason": error,
+                }
+                response_text = format_specialist_brief_text(specialist_brief)
+                response_key = self._specialist_response_key(agent)
+                specialist_responses[response_key] = response_text
                 raw_specialist_responses.append(
                     {
                         "agent": agent,
                         "request": specialist_message,
                         "response": {},
-                        "status": "failed",
+                        "status": "completed",
+                        "specialist_brief": specialist_brief,
+                        "response_source": "quasar_brief_fallback",
+                        "fallback_reason": error,
                     }
+                )
+                update_workflow_step(
+                    agent,
+                    "completed",
+                    self._response_preview(response_text),
+                    prompt_sent=prompts[agent],
+                    response_text=response_text,
+                    response_received=True,
+                    specialist_brief=specialist_brief,
+                    response_source="quasar_brief_fallback",
+                )
+                self._persist_specialist_response(
+                    agent=agent,
+                    context=context,
+                    finding=str(specialist_brief.get("state") or error),
+                    summary=response_text,
+                    raw_response_payload=raw_specialist_responses[-1],
+                )
+                append_log(
+                    "band.log",
+                    f"{agent} specialist message failed; Quasar brief fallback completed",
                 )
                 continue
 
@@ -1357,6 +1539,17 @@ class WorkflowService:
             )
             response_received = bool(specialist_response and response_text)
             response_key = self._specialist_response_key(agent)
+            specialist_brief = build_specialist_brief(agent, context)
+            response_source = "band_review"
+            original_response_text = response_text
+            if is_raw_label_repetition(response_text):
+                response_text = format_specialist_brief_text(specialist_brief)
+                response_source = "quasar_brief"
+                response_received = True
+            specialist_brief = {
+                **specialist_brief,
+                "response_source": response_source,
+            }
             specialist_responses[response_key] = response_text
             raw_specialist_responses.append(
                 {
@@ -1368,6 +1561,9 @@ class WorkflowService:
                         "prompt_sent_at": prompt_sent_at,
                     },
                     "response": specialist_response,
+                    "original_response_text": original_response_text,
+                    "specialist_brief": specialist_brief,
+                    "response_source": response_source,
                     "status": "completed" if response_received else "failed",
                 }
             )
@@ -1381,6 +1577,15 @@ class WorkflowService:
                     prompt_sent=prompts[agent],
                     response_text=response_text,
                     response_received=True,
+                    specialist_brief=specialist_brief,
+                    response_source=response_source,
+                )
+                self._persist_specialist_response(
+                    agent=agent,
+                    context=context,
+                    finding=str(specialist_brief.get("state") or summary),
+                    summary=response_text,
+                    raw_response_payload=raw_specialist_responses[-1],
                 )
                 append_log("band.log", f"{agent} specialist orchestration completed")
             else:
@@ -1422,7 +1627,15 @@ class WorkflowService:
             mentions=mentions,
         )
         if final_response.get("status") == "error":
-            raise RuntimeError(final_response.get("message", "Final Band response failed"))
+            append_log(
+                "band.log",
+                "Final Band response failed; retaining local final specialist summary",
+            )
+            final_response = {
+                **final_response,
+                "status": "local_fallback",
+                "message": final_response.get("message", "Final Band response failed"),
+            }
 
         terminal_status = "completed" if not failed_agents else "failed"
         WORKFLOW_STATE.update(
@@ -1433,6 +1646,11 @@ class WorkflowService:
                 "status": terminal_status,
                 "updated_at": utc_now_iso(),
             }
+        )
+        self._persist_final_review_response(
+            context=context,
+            final_summary=final_summary,
+            final_response=final_response,
         )
         append_log("band.log", "Quasar specialist Band workflow completed")
         return {
@@ -1449,6 +1667,104 @@ class WorkflowService:
             "failed_agents": failed_agents,
             "orchestration_mode": "specialist",
         }
+
+    def _persist_specialist_response(
+        self,
+        *,
+        agent: str,
+        context: dict[str, Any],
+        finding: str,
+        summary: str,
+        raw_response_payload: dict[str, Any],
+    ) -> None:
+        try:
+            market, instrument = self._persistence_market(context)
+            evidence_payload = build_governance_evidence(get_workflow_details(), context)
+            finding_evidence = next(
+                (
+                    item
+                    for item in evidence_payload.get("specialist_findings", [])
+                    if item.get("agent") == agent
+                ),
+                {},
+            )
+            save_specialist_response(
+                workflow_run_id=WORKFLOW_STATE.get("workflow_id", ""),
+                market=market,
+                instrument=instrument,
+                specialist_name=agent,
+                finding=finding,
+                summary=summary,
+                confidence=self._persistence_confidence(context),
+                evidence=finding_evidence.get("evidence", []),
+                warnings=finding_evidence.get("missing_evidence_warnings", []),
+                raw_response_payload=raw_response_payload,
+            )
+            append_log("band.log", f"{agent} specialist response persisted")
+        except Exception as exc:
+            append_log("band.log", f"{agent} specialist response persistence skipped: {exc}")
+
+    def _persist_final_review_response(
+        self,
+        *,
+        context: dict[str, Any],
+        final_summary: str,
+        final_response: dict[str, Any],
+    ) -> None:
+        try:
+            market, instrument = self._persistence_market(context)
+            evidence_payload = build_governance_evidence(get_workflow_details(), context)
+            final_finding = next(
+                (
+                    item
+                    for item in evidence_payload.get("specialist_findings", [])
+                    if item.get("agent") == "Final Review Agent"
+                ),
+                {},
+            )
+            save_final_review_response(
+                workflow_run_id=WORKFLOW_STATE.get("workflow_id", ""),
+                market=market,
+                instrument=instrument,
+                finding=str(final_finding.get("finding") or self._decision_state(context)),
+                summary=final_summary,
+                confidence=self._persistence_confidence(context),
+                evidence=evidence_payload,
+                warnings=evidence_payload.get("missing_evidence_warnings", []),
+                raw_response_payload={
+                    **final_response,
+                    "specialist_brief": {
+                        **build_specialist_brief("Final Review Agent", context),
+                        "response_source": "quasar_brief",
+                    },
+                    "response_source": "quasar_brief",
+                },
+            )
+            append_log("band.log", "Final specialist review response persisted")
+        except Exception as exc:
+            append_log("band.log", f"Final specialist review persistence skipped: {exc}")
+
+    def _persistence_market(self, context: dict[str, Any]) -> tuple[str, str]:
+        scope = self._normalize_analysis_scope(context.get("analysis_scope", "MCX"))
+        if scope == "FOREX":
+            return "FOREX", str((context.get("forex") or {}).get("instrument") or "XAUUSD")
+        return "MCX", str((context.get("mcx") or {}).get("instrument") or "NATURALGAS")
+
+    def _persistence_confidence(self, context: dict[str, Any]) -> int:
+        try:
+            return int(
+                round(
+                    float(
+                        (context.get("multi_timeframe") or {}).get(
+                            "structure_confidence", 0
+                        )
+                        or 0
+                    )
+                    * 100
+                )
+            )
+        except (TypeError, ValueError):
+            return 0
 
     def _send_specialist_message(
         self,
@@ -1901,12 +2217,46 @@ class WorkflowService:
         evidence = self._market_evidence_line(market)
         confidence = self._confidence_line(context)
         next_validation = self._next_validation_step(decision_state, context)
+        mtf = context.get("multi_timeframe", {})
+        mtf_decision = mtf.get("decision", {})
+        mtf_reason = mtf_decision.get("reason", "")
+        regime = mtf.get("regime", "")
+        narrative = mtf.get("narrative", {})
+        scenarios = mtf.get("scenarios") or {}
+        primary_scenario = scenarios.get("primary_scenario") or {}
+        secondary_scenario = scenarios.get("secondary_scenario") or {}
+        hierarchy = mtf.get("timeframe_hierarchy") or {}
+        memory = mtf.get("memory") or {}
+        evolution = mtf.get("evolution") or {}
+        dominant_hypothesis = (
+            f"{primary_scenario.get('name', 'No clear scenario')} "
+            f"({primary_scenario.get('probability', 0)}%)"
+        )
+        alternative_hypothesis = (
+            f"{secondary_scenario.get('name', 'Wait / No Clear Scenario')} "
+            f"({secondary_scenario.get('probability', 0)}%)"
+        )
+        decision_basis = mtf_reason or narrative.get(
+            "summary",
+            "Decision derived from selected market intelligence artifacts.",
+        )
+        if narrative.get("summary"):
+            evidence = narrative["summary"]
         lines = [
-            f"Quasar specialist review completed for {scope_label}.",
+            f"Quasar institutional market briefing for {scope_label}.",
             "",
+            f"Market Regime: {str(regime).replace('_', ' ').title() if regime else 'Unavailable'}",
             f"Decision State: {decision_state}",
-            "Evidence:",
+            "Executive Assessment:",
+            str(decision_basis),
+            "Dominant Hypothesis:",
+            dominant_hypothesis,
+            "Alternative Hypothesis:",
+            alternative_hypothesis,
+            "Intelligence Evidence:",
             f"- {scope_label}: {evidence}",
+            f"- Hierarchy: {hierarchy.get('dominant_context', 'Unknown')}; conflict {hierarchy.get('hierarchy_conflict', 'Unknown')}",
+            f"- Persistence: {memory.get('status', 'unknown')}; {evolution.get('summary', 'evolution unavailable')}",
             "Confidence:",
             confidence,
             "Next Validation:",
@@ -1926,13 +2276,20 @@ class WorkflowService:
             lines.append(f"- {label}: {self._response_preview(response, 120) if response else 'No response captured'}")
         lines.extend(
             [
+                "",
+                governance_evidence_references_text(
+                    build_governance_evidence(get_workflow_details(), context)
+                ),
                 "Safety:",
-                "Advisory-only market structure intelligence. No orders or buy/sell signals.",
+                "Advisory-only market structure intelligence. Execution disabled. No directional calls.",
             ]
         )
         return "\n".join(lines)
 
     def _decision_state(self, context: dict[str, Any]) -> str:
+        mtf_decision = context.get("multi_timeframe", {}).get("decision", {})
+        if mtf_decision.get("state"):
+            return str(mtf_decision["state"])
         bias = str(self._selected_market_context(context).get("dominant_bias", ""))
         if "CONFLICTED" in bias:
             return "CONFLICTED"
@@ -1943,6 +2300,8 @@ class WorkflowService:
         return "WAIT"
 
     def _market_evidence_line(self, market: dict[str, Any]) -> str:
+        # Prefer the multi-timeframe narrative path when available; this fallback is
+        # retained for internal/mock mode.
         labels = market.get("labels", [])
         label_text = ", ".join(
             f"{label.get('label')} {int(round(float(label.get('confidence') or 0) * 100))}%"
@@ -1957,6 +2316,19 @@ class WorkflowService:
         )
 
     def _confidence_line(self, context: dict[str, Any]) -> str:
+        mtf = context.get("multi_timeframe", {})
+        decision = mtf.get("decision", {})
+        alignment = mtf.get("alignment", {})
+        metrics = mtf.get("metrics", {})
+        if metrics:
+            structure_confidence = int(round(float(metrics.get("structure_confidence") or 0) * 100))
+            alignment_score = int(round(float(metrics.get("alignment_score") or alignment.get("alignment_score") or 0) * 100))
+            decision_strength = int(round(float(metrics.get("decision_strength") or decision.get("decision_strength") or 0) * 100))
+            return (
+                f"Structure Confidence {structure_confidence}%; "
+                f"Directional Alignment {alignment_score}%; "
+                f"Decision Strength {decision_strength}%."
+            )
         labels = self._selected_market_context(context).get("labels", [])
         if not labels:
             return "No confidence labels available."
@@ -1964,6 +2336,13 @@ class WorkflowService:
         return f"Average top-label confidence {int(round(avg_confidence * 100))}% for selected scope."
 
     def _next_validation_step(self, decision_state: str, context: dict[str, Any]) -> str:
+        mtf_next_validation = (
+            context.get("multi_timeframe", {})
+            .get("decision", {})
+            .get("next_validation")
+        )
+        if mtf_next_validation:
+            return str(mtf_next_validation)
         if decision_state == "CONFLICTED":
             return "Wait for clearer structure before changing decision state."
         if decision_state == "VALIDATE":
@@ -1999,7 +2378,7 @@ class WorkflowService:
             "- Governance controls validated\n"
             "- Delivery roadmap generated\n"
             "Safety:\n"
-            "Advisory-only market structure intelligence. No orders or buy/sell signals."
+            "Advisory-only market structure intelligence. Execution disabled. No directional calls."
         )
 
     def _extract_event_id(self, response: dict[str, Any]) -> str | None:
@@ -2109,6 +2488,8 @@ class WorkflowService:
                 "response_text": step.get("response_text", ""),
                 "response_preview": step.get("response_preview", ""),
                 "response_received": step.get("response_received", False),
+                "specialist_brief": step.get("specialist_brief", {}),
+                "response_source": step.get("response_source", ""),
                 "started_at": step.get("started_at", ""),
                 "completed_at": step.get("completed_at", ""),
                 "duration_seconds": step.get("duration_seconds"),

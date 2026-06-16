@@ -200,53 +200,83 @@ class SpecialistProcessorService:
     def _requirement_response(self, content: str) -> str:
         timeframe = self._field(content, "Timeframe")
         scope = self._selected_scope(content)
+        regime = self._artifact_value(content, "Market Regime")
+        scenario = self._artifact_value(content, "Scenario Engine")
+        validation = self._artifact_value(content, "Validation Conditions")
         return (
-            "Requirement Agent response: decision-support scope confirmed for "
-            f"{scope} on {timeframe}. Objective is structure interpretation, "
-            "confidence review, and next validation planning within advisory-only boundaries."
+            "Requirement Agent response: market question defined for "
+            f"{scope} on {timeframe}: whether the {regime.lower()} regime and "
+            f"{scenario} scenario provide enough validated evidence to move beyond "
+            f"the current decision state. Validation focus: {validation}. "
+            "Advisory-only boundaries remain active."
         )
 
     def _market_intel_response(self, content: str) -> str:
-        market = self._selected_market_summary(content)
+        regime = self._artifact_value(content, "Market Regime")
+        scenario = self._artifact_value(content, "Scenario Engine")
+        hierarchy = self._artifact_value(content, "Timeframe Hierarchy")
+        memory = self._artifact_value(content, "Market Memory / Persistence")
+        narrative = self._artifact_value(content, "Executive Narrative")
         decision = self._decision_state(content)
         return (
             "Market Intelligence Agent response: "
-            f"{market} Decision state is {decision}; structure should be watched "
-            "and validated against the next candle and higher timeframe context."
+            f"Dominant thesis is {scenario} inside a {regime.lower()} regime. "
+            f"Alternative thesis remains a failed or delayed scenario if hierarchy does not confirm: {hierarchy}. "
+            f"Supporting evidence: {narrative} Persistence evidence: {memory}. "
+            f"Contradicting evidence is any unresolved hierarchy conflict or stale memory; decision state is {decision}."
         )
 
     def _architecture_response(self, content: str) -> str:
         readiness = self._selected_readiness_summary(content)
+        hierarchy = self._artifact_value(content, "Timeframe Hierarchy")
+        evidence = self._governance_evidence_summary(content)
         return (
-            "System Readiness Agent response: current feed is usable for decision support "
-            f"with these caveats: {readiness} Validate freshness, session state, and "
-            "top-label confidence before relying on the structure."
+            "System Readiness Agent response: intelligence is usable only if feed "
+            f"freshness and session state hold: {readiness} Evidence quality check: "
+            f"{evidence}. Hierarchy availability: {hierarchy}. Refresh source data, "
+            "scenario output, and governance evidence before relying on stale context."
         )
 
     def _risk_response(self, content: str) -> str:
         decision = self._decision_state(content)
+        regime = self._artifact_value(content, "Market Regime")
+        hierarchy = self._artifact_value(content, "Timeframe Hierarchy")
+        validation = self._artifact_value(content, "Validation Conditions")
+        memory = self._artifact_value(content, "Market Memory / Persistence")
         return (
-            "Risk Governance Agent response: guardrails set to advisory-only. "
-            f"Decision state {decision} requires patience, confirmation, and no automated "
-            "execution. Off-session or stale data should force wait/validate behavior."
+            "Risk Governance Agent response: confidence risk is controlled by "
+            f"keeping {decision} until validation completes. Conflict risk comes from "
+            f"{hierarchy}. Persistence risk comes from {memory}. Validation risk: "
+            f"{validation}. Regime context is {regime}; advisory-only and no automated execution remain enforced."
         )
 
     def _delivery_response(self, content: str) -> str:
         decision = self._decision_state(content)
+        scenario = self._artifact_value(content, "Scenario Engine")
+        hierarchy = self._artifact_value(content, "Timeframe Hierarchy")
+        validation = self._artifact_value(content, "Validation Conditions")
+        evidence = self._governance_evidence_summary(content)
         return (
-            "Delivery Planning Agent response: next-step decision plan is "
-            f"{decision}. Monitor the next candle close, compare higher timeframe structure, "
-            "and re-check liquidity-sweep or BOS confirmation before updating the state."
+            "Delivery Planning Agent response: validation roadmap is "
+            f"{decision}. First refresh the scenario engine for {scenario}; then confirm "
+            f"hierarchy behavior ({hierarchy}); then test validation conditions: {validation}. "
+            f"Required evidence next: fresh candle/session state plus governance references ({evidence})."
         )
 
     def _review_response(self, content: str) -> str:
         decision = self._decision_state(content)
-        market = self._selected_market_summary(content)
+        regime = self._artifact_value(content, "Market Regime")
+        scenario = self._artifact_value(content, "Scenario Engine")
+        hierarchy = self._artifact_value(content, "Timeframe Hierarchy")
+        memory = self._artifact_value(content, "Market Memory / Persistence")
+        validation = self._artifact_value(content, "Validation Conditions")
+        narrative = self._artifact_value(content, "Executive Narrative")
         return (
             "Final Review Agent response: "
-            f"Decision State: {decision}. Evidence: {market} Next validation is "
-            "higher timeframe agreement plus next candle confirmation. Safety remains "
-            "advisory-only with no execution."
+            f"Executive assessment: {decision} is the correct current decision state because "
+            f"{narrative} Dominant hypothesis: {scenario} in a {regime.lower()} regime. "
+            f"Alternative hypothesis: hierarchy or persistence fails to confirm ({hierarchy}; {memory}). "
+            f"Next required evidence: {validation}. Safety remains advisory-only with no execution."
         )
 
     def _generic_response(self, content: str) -> str:
@@ -326,6 +356,39 @@ class SpecialistProcessorService:
             if normalized.startswith(normalized_prefix):
                 return stripped.split(":", 1)[1].strip()
         return "unknown"
+
+    def _artifact_value(self, content: str, name: str) -> str:
+        prefix = f"- {name}:"
+        plain_prefix = f"{name}:"
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(prefix):
+                return stripped.split(":", 1)[1].strip() or "unavailable"
+            if stripped.startswith(plain_prefix):
+                return stripped.split(":", 1)[1].strip() or "unavailable"
+        return "unavailable"
+
+    def _governance_evidence_summary(self, content: str) -> str:
+        lines = content.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.strip() in {"- Governance Evidence:", "Governance Evidence:", "Evidence References:"}:
+                start = index + 1
+                break
+        if start is None:
+            return "governance evidence unavailable"
+        facts = []
+        for line in lines[start:]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.endswith(":") and facts:
+                break
+            if stripped.startswith("- ") or stripped.startswith("  - "):
+                facts.append(stripped.lstrip("- ").strip())
+            if len(facts) >= 2:
+                break
+        return "; ".join(facts) if facts else "governance evidence unavailable"
 
     def _market_section(self, content: str, market: str) -> list[str]:
         lines = content.splitlines()

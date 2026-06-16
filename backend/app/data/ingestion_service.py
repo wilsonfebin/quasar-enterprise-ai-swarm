@@ -7,6 +7,7 @@ from app.data.twelvedata_client import (
     TwelveDataCredentialsMissing,
 )
 from app.data.zerodha_client import ZerodhaClient, ZerodhaCredentialsMissing
+from app.data.zerodha_client import ZerodhaApiError
 from app.data.candle_aggregator import aggregate_1m_candles
 from app.db import (
     fetch_matching_market_candle,
@@ -473,6 +474,26 @@ def backfill_zerodha_mcx(days=60, chunk_days=5, dry_run=False):
         market_structure = (
             None if dry_run else compact_market_structure_result(refresh_market_structure())
         )
+    except ZerodhaApiError as exc:
+        action_hint = "Verify Zerodha API key/access token and Kite historical data permissions."
+        if exc.status_code in {401, 403}:
+            action_hint = (
+                "Zerodha rejected the request. Regenerate today's access token "
+                "and verify the app has permission for MCX historical candles."
+            )
+        message = f"Zerodha MCX backfill failed: {exc}"
+        append_log("mcx_live.log", message)
+        append_log("backend.log", message)
+        return {
+            "status": "error",
+            "message": message,
+            "provider_status_code": exc.status_code,
+            "provider_error_type": exc.error_type,
+            "action_hint": action_hint,
+            "instrument": instrument,
+            "instrument_meta": instrument_meta,
+            "chunks": chunks,
+        }
     except Exception as exc:
         message = f"Zerodha MCX backfill failed: {exc}"
         append_log("mcx_live.log", message)

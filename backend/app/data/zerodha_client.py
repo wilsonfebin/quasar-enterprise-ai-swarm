@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from io import StringIO
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 
 class ZerodhaCredentialsMissing(RuntimeError):
@@ -12,6 +13,18 @@ class ZerodhaCredentialsMissing(RuntimeError):
 
 class ZerodhaInstrumentMissing(RuntimeError):
     pass
+
+
+class ZerodhaApiError(RuntimeError):
+    def __init__(self, status_code, message, error_type="", path=""):
+        self.status_code = status_code
+        self.message = message
+        self.error_type = error_type
+        self.path = path
+        detail = f"Zerodha API {status_code}: {message}"
+        if error_type:
+            detail = f"{detail} ({error_type})"
+        super().__init__(detail)
 
 
 class ZerodhaClient:
@@ -46,8 +59,28 @@ class ZerodhaClient:
             f"{self.base_url}{path}{query}",
             headers=self._headers(),
         )
-        with urlopen(request, timeout=timeout) as response:
-            return response.read().decode()
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read().decode()
+        except HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            message = exc.reason or "Zerodha API request failed"
+            error_type = ""
+            if body:
+                try:
+                    import json
+
+                    payload = json.loads(body)
+                    message = payload.get("message") or message
+                    error_type = payload.get("error_type") or ""
+                except Exception:
+                    message = body[:240]
+            raise ZerodhaApiError(
+                status_code=exc.code,
+                message=message,
+                error_type=error_type,
+                path=path,
+            ) from exc
 
     def _get_json(self, path, params=None, timeout=30):
         import json
