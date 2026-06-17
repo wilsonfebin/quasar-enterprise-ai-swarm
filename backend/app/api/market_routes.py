@@ -582,6 +582,9 @@ def market_ingestion_status():
                 else state.get("freshness_status"),
                 "market_session": "open" if is_forex_market_open() else "closed",
                 "analysis_readiness": "Weak" if latest else "Not Ready",
+                "stale_data_warning": ""
+                if not is_forex_market_open() or freshness["seconds"] <= 900
+                else f"Latest candle is stale: {freshness['seconds'] // 60}m old",
             }
         )
         state.update(

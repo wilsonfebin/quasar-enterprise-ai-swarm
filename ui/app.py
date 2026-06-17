@@ -3,9 +3,9 @@ import streamlit as st
 from components.agent_swarm import render_agent_monitor
 from components.logs import render_logs_page
 from components.market_cards import render_market_card
-from components.sidebar import render_live_feed_controls, render_status_strip
+from components.sidebar import render_live_feed_controls
 from config import PAGE_OPTIONS, TIMEZONE_OPTIONS
-from styles import load_styles
+from styles import apply_theme, load_styles
 from utils.state import initialize_session_state
 
 
@@ -21,17 +21,32 @@ st.title("Quasar Enterprise AI Delivery Swarm")
 st.caption("Live Market Intelligence + Band Agent Workflow Monitor")
 
 page = st.sidebar.radio("Navigation", PAGE_OPTIONS)
+selected_timezone = st.sidebar.radio(
+    "Timezone",
+    list(TIMEZONE_OPTIONS.keys()),
+    horizontal=True,
+    key="global_timezone",
+    index=list(TIMEZONE_OPTIONS.keys()).index(
+        st.session_state.get("global_timezone", "IST")
+    )
+    if st.session_state.get("global_timezone", "IST") in TIMEZONE_OPTIONS
+    else list(TIMEZONE_OPTIONS.keys()).index("IST"),
+)
+selected_theme = st.sidebar.selectbox(
+    "Theme",
+    ["Default Dark", "Black"],
+    key="ui_theme",
+    index=1 if st.session_state.get("ui_theme") == "Black" else 0,
+)
+apply_theme(selected_theme)
+previous_page = st.session_state.get("active_page")
+page_changed = previous_page is not None and previous_page != page
+st.session_state["active_page"] = page
+if page_changed:
+    st.session_state.pop("raw_log_source", None)
 
 if page == "Live Market Intelligence":
     render_live_feed_controls()
-    render_status_strip()
-    selected_timezone = st.sidebar.radio(
-        "Timezone",
-        list(TIMEZONE_OPTIONS.keys()),
-        horizontal=True,
-        key="global_timezone",
-        index=list(TIMEZONE_OPTIONS.keys()).index("IST"),
-    )
 
     col1, col2 = st.columns(2)
 

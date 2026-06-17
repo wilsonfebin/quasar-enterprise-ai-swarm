@@ -130,6 +130,26 @@ def log_lines(log_name: str):
     return get_json(f"/logs/{log_name}")
 
 
+def submission_readiness(market: str = "MCX", instrument: str = "NATURALGAS"):
+    return get_json(f"/submission/readiness?market={market}&instrument={instrument}")
+
+
+def specialist_latest(market: str = "MCX", instrument: str = "NATURALGAS"):
+    return get_json(f"/agents/specialists/latest?market={market}&instrument={instrument}")
+
+
+def specialist_history(market: str = "MCX", instrument: str = "NATURALGAS"):
+    return get_json(f"/agents/specialists/history?market={market}&instrument={instrument}")
+
+
+def governance_evidence():
+    return get_json("/agents/governance/evidence")
+
+
+def decision_trace_latest(market: str = "MCX", instrument: str = "NATURALGAS"):
+    return get_json(f"/agents/audit/decision-trace/latest?market={market}&instrument={instrument}")
+
+
 def start_workflow_thread(analysis_scope: str = "MCX"):
     def run_workflow():
         try:

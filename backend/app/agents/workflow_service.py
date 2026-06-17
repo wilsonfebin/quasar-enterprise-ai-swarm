@@ -38,6 +38,10 @@ WORKFLOW_STEPS = [
 WORKFLOW_AGENT_SEQUENCE = WORKFLOW_STEPS
 
 
+def append_agent_workflow_log(message: str) -> None:
+    append_log("agent_workflow.log", message)
+
+
 def _initial_workflow_steps() -> list[dict[str, Any]]:
     return [
         {
@@ -905,6 +909,9 @@ class WorkflowService:
         analysis_scope: str = "MCX",
     ) -> dict[str, Any]:
         append_log("band.log", "Quasar Band workflow started")
+        append_agent_workflow_log(
+            f"Workflow started scope={self._scope_label(analysis_scope)}"
+        )
         reset_workflow_state(status="running")
         WORKFLOW_STATE.update(
             {
@@ -920,6 +927,7 @@ class WorkflowService:
 
         if registry and registry.all_specialists_connected():
             append_log("band.log", "Quasar specialist orchestration mode active")
+            append_agent_workflow_log("Specialist orchestration mode active")
             return self._run_specialist_orchestration(
                 chat_id=chat_id,
                 message_id=message_id,
@@ -930,6 +938,7 @@ class WorkflowService:
             )
 
         append_log("band.log", "Quasar internal workflow fallback active")
+        append_agent_workflow_log("Internal workflow fallback active")
 
         context: dict[str, Any] = {}
         stage_plan = [
@@ -974,6 +983,7 @@ class WorkflowService:
                 prompt_sent=event_content,
             )
             append_log("band.log", f"{agent} started")
+            append_agent_workflow_log(f"{agent} running")
             if agent == "Market Intelligence Agent":
                 context = self.build_quasar_context(analysis_scope=analysis_scope)
 
@@ -999,6 +1009,7 @@ class WorkflowService:
                 response_received=True,
             )
             append_log("band.log", f"{agent} completed")
+            append_agent_workflow_log(f"{agent} completed")
 
         final_summary = self._build_final_summary()
         mention_prefix = self._mention_prefix(mentions[0]) if mentions else "@participant"
@@ -1030,6 +1041,7 @@ class WorkflowService:
             }
         )
         append_log("band.log", "Quasar Band workflow completed")
+        append_agent_workflow_log("Workflow completed")
         return {
             "status": "completed",
             "workflow_progress": 100,
@@ -1442,6 +1454,7 @@ class WorkflowService:
                 prompt_sent=prompts[agent],
             )
             append_log("band.log", f"{agent} specialist orchestration started")
+            append_agent_workflow_log(f"{agent} running")
             prompt_sent_at = utc_now_iso()
             specialist_message = self._send_specialist_message(
                 chat_id=chat_id,
@@ -1509,6 +1522,9 @@ class WorkflowService:
                 append_log(
                     "band.log",
                     f"{agent} specialist message failed; Quasar brief fallback completed",
+                )
+                append_agent_workflow_log(
+                    f"{agent} completed source=quasar_brief_fallback"
                 )
                 continue
 
@@ -1588,6 +1604,9 @@ class WorkflowService:
                     raw_response_payload=raw_specialist_responses[-1],
                 )
                 append_log("band.log", f"{agent} specialist orchestration completed")
+                append_agent_workflow_log(
+                    f"{agent} completed source={response_source}"
+                )
             else:
                 scanned_count = (
                     specialist_response.get("scanned_message_count", 0)
@@ -1608,6 +1627,7 @@ class WorkflowService:
                     response_received=False,
                 )
                 append_log("band.log", f"{agent} specialist orchestration timeout")
+                append_agent_workflow_log(f"{agent} failed reason=timeout")
 
         completed_agents = sum(
             1 for step in WORKFLOW_STATE["steps"] if step.get("status") == "completed"
@@ -1631,6 +1651,7 @@ class WorkflowService:
                 "band.log",
                 "Final Band response failed; retaining local final specialist summary",
             )
+            append_agent_workflow_log("Final response retained locally")
             final_response = {
                 **final_response,
                 "status": "local_fallback",
@@ -1653,6 +1674,9 @@ class WorkflowService:
             final_response=final_response,
         )
         append_log("band.log", "Quasar specialist Band workflow completed")
+        append_agent_workflow_log(
+            f"Workflow {terminal_status} completed_agents={completed_agents}/{len(WORKFLOW_STEPS)}"
+        )
         return {
             "status": terminal_status,
             "workflow_progress": WORKFLOW_STATE["progress"],
@@ -1701,8 +1725,10 @@ class WorkflowService:
                 raw_response_payload=raw_response_payload,
             )
             append_log("band.log", f"{agent} specialist response persisted")
+            append_agent_workflow_log(f"{agent} response persisted")
         except Exception as exc:
             append_log("band.log", f"{agent} specialist response persistence skipped: {exc}")
+            append_agent_workflow_log(f"{agent} response persistence skipped error={exc}")
 
     def _persist_final_review_response(
         self,
@@ -1741,8 +1767,12 @@ class WorkflowService:
                 },
             )
             append_log("band.log", "Final specialist review response persisted")
+            append_agent_workflow_log("Final Review Agent response persisted")
         except Exception as exc:
             append_log("band.log", f"Final specialist review persistence skipped: {exc}")
+            append_agent_workflow_log(
+                f"Final Review Agent response persistence skipped error={exc}"
+            )
 
     def _persistence_market(self, context: dict[str, Any]) -> tuple[str, str]:
         scope = self._normalize_analysis_scope(context.get("analysis_scope", "MCX"))

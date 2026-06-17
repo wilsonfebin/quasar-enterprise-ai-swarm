@@ -5,7 +5,6 @@ from api_client import (
     backfill_mcx,
     candle_health,
     feed_status,
-    health,
     latest_market,
     pause_forex_ingestion,
     pause_mcx_ingestion,
@@ -22,19 +21,7 @@ from components.feed_health import (
 from utils.formatting import market_session_text
 
 
-def health_ok():
-    health_response = health()
-    return "error" not in health_response and health_response.get("status") == "healthy"
-
 def render_status_strip():
-    backend_status = "Backend Healthy" if health_ok() else "Backend Disconnected"
-    latest = latest_market()
-    db_status = "TimescaleDB Healthy" if "error" not in latest else "TimescaleDB Unknown"
-    st.sidebar.markdown("**System Status**")
-    st.sidebar.caption(f"🟢 {backend_status}")
-    st.sidebar.caption(f"🟢 {db_status}")
-    st.sidebar.caption("🟡 Live Feed Mode")
-    st.sidebar.caption("🟢 Agent Workflow Ready")
     st.sidebar.markdown("**Safety Mode**")
     st.sidebar.caption("🛡 Advisory Only")
     st.sidebar.caption("🚫 No Orders")
@@ -168,3 +155,5 @@ def render_live_feed_controls():
                 st.caption(message)
             if action_hint:
                 st.caption(action_hint)
+
+    render_status_strip()

@@ -47,6 +47,8 @@ TWELVEDATA_INGESTION_STATE: dict[str, Any] = {
     "success_count": 0,
     "failure_count": 0,
     "duplicate_skipped_count": 0,
+    "rate_limit_count": 0,
+    "rate_limit_until": "",
 }
 
 _scheduler_task: asyncio.Task | None = None
@@ -131,6 +133,13 @@ def _env_interval() -> int:
         return 60
 
 
+def _twelvedata_rate_limit_cooldown_seconds() -> int:
+    try:
+        return max(60, int(os.getenv("TWELVEDATA_RATE_LIMIT_COOLDOWN_SECONDS", "900")))
+    except ValueError:
+        return 900
+
+
 def _zerodha_env_enabled() -> bool:
     return os.getenv("ZERODHA_AUTO_INGEST", "false").lower() == "true"
 
@@ -199,6 +208,38 @@ def _freshness_seconds(exchange_timestamp: str) -> int | None:
     except ValueError:
         return None
     return int((_utc_now() - parsed).total_seconds())
+
+
+def _parse_iso(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        return None
+
+
+def _is_twelvedata_rate_limit(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return "429" in lowered or "too many requests" in lowered
+
+
+def _twelvedata_rate_limit_active(now: datetime | None = None) -> bool:
+    until = _parse_iso(str(TWELVEDATA_INGESTION_STATE.get("rate_limit_until") or ""))
+    return bool(until and until > (now or _utc_now()))
+
+
+def _set_twelvedata_rate_limit(message: str, now: datetime | None = None) -> str:
+    current = now or _utc_now()
+    until = current + timedelta(seconds=_twelvedata_rate_limit_cooldown_seconds())
+    TWELVEDATA_INGESTION_STATE["rate_limit_count"] += 1
+    TWELVEDATA_INGESTION_STATE["rate_limit_until"] = _iso(until)
+    TWELVEDATA_INGESTION_STATE["last_status"] = "rate_limited"
+    TWELVEDATA_INGESTION_STATE["last_error"] = str(message or "TwelveData rate limit active")
+    return _iso(until)
 
 
 def _freshness_label(seconds: int | None) -> str:
@@ -383,6 +424,17 @@ def run_twelvedata_ingest_once() -> dict[str, Any]:
             "last_error": "",
         }
     )
+    if _twelvedata_rate_limit_active(now):
+        until = TWELVEDATA_INGESTION_STATE.get("rate_limit_until", "")
+        message = f"TwelveData rate limit active; skipping provider call until {until}"
+        TWELVEDATA_INGESTION_STATE["last_status"] = "rate_limited"
+        TWELVEDATA_INGESTION_STATE["last_error"] = message
+        append_log("forex.log", message)
+        append_log("backend.log", message)
+        return {
+            "scheduler": get_twelvedata_ingestion_status(),
+            "ingest_result": {"status": "rate_limited", "message": message},
+        }
 
     try:
         result = ingest_twelvedata_forex()
@@ -400,6 +452,7 @@ def run_twelvedata_ingest_once() -> dict[str, Any]:
             TWELVEDATA_INGESTION_STATE["success_count"] += 1
             TWELVEDATA_INGESTION_STATE["last_success_at"] = _iso(_utc_now())
             TWELVEDATA_INGESTION_STATE["last_status"] = "success"
+            TWELVEDATA_INGESTION_STATE["rate_limit_until"] = ""
             append_log("forex.log", "TwelveData scheduler ingest success")
             append_log("backend.log", "TwelveData scheduler ingest success")
         elif status == "duplicate_skipped":
@@ -417,10 +470,16 @@ def run_twelvedata_ingest_once() -> dict[str, Any]:
             append_log("backend.log", f"TwelveData scheduler skipped: {result.get('message', '')}")
         else:
             TWELVEDATA_INGESTION_STATE["failure_count"] += 1
-            TWELVEDATA_INGESTION_STATE["last_status"] = "failed"
-            TWELVEDATA_INGESTION_STATE["last_error"] = result.get("message", "Ingest failed")
-            append_log("forex.log", f"TwelveData scheduler ingest failure: {TWELVEDATA_INGESTION_STATE['last_error']}")
-            append_log("backend.log", f"TwelveData scheduler ingest failure: {TWELVEDATA_INGESTION_STATE['last_error']}")
+            message = result.get("message", "Ingest failed")
+            if _is_twelvedata_rate_limit(message):
+                until = _set_twelvedata_rate_limit(message, now=_utc_now())
+                append_log("forex.log", f"TwelveData provider rate limited; cooling down until={until}")
+                append_log("backend.log", f"TwelveData provider rate limited; cooling down until={until}")
+            else:
+                TWELVEDATA_INGESTION_STATE["last_status"] = "failed"
+                TWELVEDATA_INGESTION_STATE["last_error"] = message
+                append_log("forex.log", f"TwelveData scheduler ingest failure: {TWELVEDATA_INGESTION_STATE['last_error']}")
+                append_log("backend.log", f"TwelveData scheduler ingest failure: {TWELVEDATA_INGESTION_STATE['last_error']}")
 
         if last_price is not None:
             TWELVEDATA_INGESTION_STATE["last_price"] = last_price
@@ -469,10 +528,15 @@ def run_twelvedata_ingest_once() -> dict[str, Any]:
     except Exception as exc:
         message = str(exc)
         TWELVEDATA_INGESTION_STATE["failure_count"] += 1
-        TWELVEDATA_INGESTION_STATE["last_status"] = "failed"
-        TWELVEDATA_INGESTION_STATE["last_error"] = message
-        append_log("forex.log", f"TwelveData scheduler ingest failure: {message}")
-        append_log("backend.log", f"TwelveData scheduler ingest failure: {message}")
+        if _is_twelvedata_rate_limit(message):
+            until = _set_twelvedata_rate_limit(message)
+            append_log("forex.log", f"TwelveData provider rate limited; cooling down until={until}")
+            append_log("backend.log", f"TwelveData provider rate limited; cooling down until={until}")
+        else:
+            TWELVEDATA_INGESTION_STATE["last_status"] = "failed"
+            TWELVEDATA_INGESTION_STATE["last_error"] = message
+            append_log("forex.log", f"TwelveData scheduler ingest failure: {message}")
+            append_log("backend.log", f"TwelveData scheduler ingest failure: {message}")
         return {
             "scheduler": get_twelvedata_ingestion_status(),
             "ingest_result": {"status": "error", "message": message},
@@ -628,15 +692,35 @@ def run_missing_candle_fill_once() -> dict[str, Any]:
     mcx_result: dict[str, Any] = {"status": "not_run", "total_inserted": 0}
     errors: list[str] = []
 
-    try:
-        forex_result = backfill_twelvedata_forex(
-            days=days,
-            chunk_days=1,
-            dry_run=False,
-            refresh_structure=False,
+    if _twelvedata_rate_limit_active():
+        message = (
+            "TwelveData rate limit active; skipping Forex missing candle fill "
+            f"until {TWELVEDATA_INGESTION_STATE.get('rate_limit_until', '')}"
         )
-    except Exception as exc:
-        errors.append(f"Forex fill failed: {exc}")
+        forex_result = {"status": "rate_limited", "message": message, "total_inserted": 0}
+        append_log("backend.log", message)
+    else:
+        try:
+            forex_result = backfill_twelvedata_forex(
+                days=days,
+                chunk_days=1,
+                dry_run=False,
+                refresh_structure=False,
+            )
+            if _is_twelvedata_rate_limit(str(forex_result.get("message", ""))):
+                _set_twelvedata_rate_limit(str(forex_result.get("message", "")))
+                forex_result = {
+                    **forex_result,
+                    "status": "rate_limited",
+                    "total_inserted": int(forex_result.get("total_inserted") or 0),
+                }
+        except Exception as exc:
+            message = str(exc)
+            if _is_twelvedata_rate_limit(message):
+                _set_twelvedata_rate_limit(message)
+                forex_result = {"status": "rate_limited", "message": message, "total_inserted": 0}
+            else:
+                errors.append(f"Forex fill failed: {exc}")
 
     try:
         mcx_result = backfill_zerodha_mcx(
@@ -714,6 +798,7 @@ async def _scheduler_loop() -> None:
             "duplicate_skipped",
             "failed",
             "skipped",
+            "rate_limited",
         }:
             TWELVEDATA_INGESTION_STATE["last_status"] = "stopped"
 

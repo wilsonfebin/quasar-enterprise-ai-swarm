@@ -51,6 +51,28 @@ h3 {
     margin-bottom: 0.75rem;
     font-size: 0.9rem;
 }
+.audit-metric-card {
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.035);
+    padding: 0.5rem 0.55rem;
+    margin-bottom: 0.45rem;
+    min-height: 58px;
+}
+.audit-metric-label {
+    font-size: 9px;
+    font-weight: 700;
+    opacity: 0.64;
+    text-transform: uppercase;
+    letter-spacing: 0;
+}
+.audit-metric-value {
+    margin-top: 0.18rem;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+}
 .candle-direction {
     font-size: 0.86rem;
     font-weight: 600;
@@ -598,3 +620,43 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
 
 def load_styles():
     st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+
+
+def apply_theme(theme_name: str):
+    if theme_name != "Black":
+        return
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: #000000;
+            color: #f4f7fb;
+        }
+        [data-testid="stSidebar"] {
+            background: #050505;
+            border-right: 1px solid rgba(255, 255, 255, 0.10);
+        }
+        [data-testid="stHeader"] {
+            background: rgba(0, 0, 0, 0);
+        }
+        .status-strip,
+        .log-card,
+        .agent-card,
+        .agent-summary-card,
+        .audit-metric-card,
+        .decision-card,
+        .confidence-attribution,
+        .ohlc-card,
+        .candle-summary-cell,
+        .label-chip,
+        .agent-purpose-banner {
+            background: rgba(255, 255, 255, 0.025);
+            border-color: rgba(255, 255, 255, 0.12);
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            background: rgba(255, 255, 255, 0.012);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
