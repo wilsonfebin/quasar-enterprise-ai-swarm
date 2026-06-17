@@ -45,14 +45,18 @@ def generate_smc_labels():
                 )
                 cursor.execute(
                     """
-                    SELECT id, instrument, market_type, source, timeframe, ts,
-                        open, high, low, close, volume
-                    FROM market_candles
-                    WHERE market_type = %s
-                        AND instrument = %s
-                        AND timeframe = %s
+                    SELECT *
+                    FROM (
+                        SELECT id, instrument, market_type, source, timeframe, ts,
+                            open, high, low, close, volume
+                        FROM market_candles
+                        WHERE market_type = %s
+                            AND instrument = %s
+                            AND timeframe = %s
+                        ORDER BY ts DESC, id DESC
+                        LIMIT 200
+                    ) recent_candles
                     ORDER BY ts ASC, id ASC
-                    LIMIT 200
                     """,
                     (
                         market["market_type"],

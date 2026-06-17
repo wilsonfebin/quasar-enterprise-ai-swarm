@@ -200,7 +200,7 @@ def render_feed_card(
     st.sidebar.caption(f"Freshness: {freshness}")
     st.sidebar.caption(
         f"History: {coverage_label(health)} · "
-        f"{int(health.get('total_candles') or 0):,} candles"
+        f"{int(health.get('db_total_candles') or health.get('total_candles') or 0):,} candles"
     )
     st.sidebar.caption(f"Readiness: {analysis_readiness(health, configured=configured)}")
     with st.sidebar.expander(f"Advanced {market_label} Details", expanded=False):

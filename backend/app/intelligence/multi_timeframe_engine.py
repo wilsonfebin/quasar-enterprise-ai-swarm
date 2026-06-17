@@ -685,38 +685,157 @@ def generate_executive_summary(snapshot: dict[str, Any]) -> str:
 def derive_validation_triggers(snapshot: dict[str, Any]) -> dict[str, list[str]]:
     regime = str(snapshot.get("regime", "")).upper()
     stale = bool(_stale_reason(snapshot.get("timeframes", {})))
-    bullish_validation = [
-        "15m CHOCH_BULLISH appears",
-        "1H structure returns to bullish continuation",
-        "lower timeframe bearish transition fails",
-    ]
-    bearish_validation = [
-        "4H shifts to bearish transition",
-        "15m and 1H align bearish",
-        "fresh BOS_BEARISH appears after session opens",
-    ]
-    if regime == "BULLISH_PULLBACK":
+    alignment = snapshot.get("alignment", {})
+    chain = snapshot.get("structure_chain", {})
+    scenarios = snapshot.get("scenarios", {})
+    timeframes = snapshot.get("timeframes", {})
+    selected_timeframe = snapshot.get("selected_timeframe", "1m")
+    selected = timeframes.get(selected_timeframe, {})
+    dominant_side = _bias_side(alignment.get("dominant_bias"))
+    if dominant_side == "NEUTRAL":
+        dominant_side = _bias_side(chain.get("higher_timeframe_structure"))
+    opposing_side = "BEARISH" if dominant_side == "BULLISH" else "BULLISH"
+    aligned = alignment.get("aligned_timeframes", []) or []
+    conflicting = alignment.get("conflicting_timeframes", []) or []
+    conflict_level = str(alignment.get("conflict_level", "UNKNOWN")).upper()
+    scenario_conditions = scenarios.get("validation_conditions", []) if isinstance(scenarios, dict) else []
+    invalidation_conditions = scenarios.get("invalidation_conditions", []) if isinstance(scenarios, dict) else []
+
+    lower_side = _bias_side(chain.get("lower_timeframe_structure"))
+    middle_side = _bias_side(chain.get("middle_timeframe_structure"))
+    higher_side = _bias_side(chain.get("higher_timeframe_structure"))
+
+    def side_word(side: str) -> str:
+        return "bullish" if side == "BULLISH" else "bearish" if side == "BEARISH" else "directional"
+
+    def opposite_word(side: str) -> str:
+        return side_word("BEARISH" if side == "BULLISH" else "BULLISH")
+
+    def fresh_structure_condition(side: str) -> str:
+        return f"fresh {side_word(side)} structure appears on the selected timeframe"
+
+    if dominant_side == "NEUTRAL":
         bullish_validation = [
-            "4H shifts to bullish transition",
-            "15m and 1H align bullish",
-            "fresh BOS_BULLISH appears after session opens",
+            "15m and 1H begin aligning bullish",
+            "higher timeframe resistance pressure weakens",
+            "lower timeframe bearish transition fails to persist",
         ]
         bearish_validation = [
-            "15m CHOCH_BEARISH appears",
-            "1H returns to bearish continuation",
-            "lower timeframe bullish transition fails",
+            "15m and 1H begin aligning bearish",
+            "higher timeframe support pressure weakens",
+            "lower timeframe bullish transition fails to persist",
         ]
+    else:
+        dominant_word = side_word(dominant_side)
+        opposing_word = opposite_word(dominant_side)
+        dominant_validation = [
+            f"15m and 1H maintain {dominant_word} agreement",
+            f"4H remains in {dominant_word} transition or continuation",
+            f"conflicting timeframe pressure reduces from {', '.join(conflicting) if conflicting else 'nearby lower timeframes'}",
+        ]
+        opposing_validation = [
+            f"1H and 4H shift toward {opposing_word} agreement",
+            f"15m confirms {opposing_word} transition against current bias",
+            f"{dominant_word.title()} lower timeframe structure fails to persist",
+        ]
+        if selected.get("structure_state"):
+            dominant_validation[0] = (
+                f"{selected_timeframe} and 15m sustain {dominant_word} structure"
+            )
+        if dominant_side == "BULLISH":
+            bullish_validation = dominant_validation
+            bearish_validation = opposing_validation
+        else:
+            bearish_validation = dominant_validation
+            bullish_validation = opposing_validation
+
+    if regime.endswith("PULLBACK") and higher_side in {"BULLISH", "BEARISH"}:
+        pullback_side = "BEARISH" if higher_side == "BULLISH" else "BULLISH"
+        continuation_condition = (
+            f"pullback pressure fades and {side_word(higher_side)} higher timeframe structure holds"
+        )
+        reversal_condition = (
+            f"{side_word(pullback_side).title()} pullback expands into 1H and 4H agreement"
+        )
+        if higher_side == "BULLISH":
+            bullish_validation[0] = continuation_condition
+            bearish_validation[0] = reversal_condition
+        else:
+            bearish_validation[0] = continuation_condition
+            bullish_validation[0] = reversal_condition
+
+    if middle_side != "NEUTRAL" and higher_side != "NEUTRAL" and middle_side != higher_side:
+        wait_conflict = (
+            f"middle timeframe remains {side_word(middle_side)} while higher timeframe remains {side_word(higher_side)}"
+        )
+    elif lower_side != "NEUTRAL" and higher_side != "NEUTRAL" and lower_side != higher_side:
+        wait_conflict = (
+            f"lower timeframe remains {side_word(lower_side)} while higher timeframe remains {side_word(higher_side)}"
+        )
+    elif conflicting:
+        wait_conflict = f"{', '.join(conflicting)} remains out of alignment"
+    else:
+        wait_conflict = "confirmation is still below a high-confidence threshold"
+
     wait_conditions = [
-        "market remains closed",
-        "lower and higher timeframes remain conflicted",
+        "market session or data freshness is not suitable",
+        wait_conflict,
     ]
     if stale:
-        wait_conditions.insert(1, "structure remains stale")
+        wait_conditions.insert(1, "structure evidence remains stale")
+    if conflict_level == "HIGH":
+        wait_conditions.append("conflict level remains high")
+    elif conflict_level == "MEDIUM":
+        wait_conditions.append("conflict level remains medium")
+
+    for condition in scenario_conditions[:2]:
+        clean = str(condition).replace("_", " ").lower()
+        if dominant_side == "BULLISH" and clean not in [item.lower() for item in bullish_validation]:
+            bullish_validation.append(clean)
+        elif dominant_side == "BEARISH" and clean not in [item.lower() for item in bearish_validation]:
+            bearish_validation.append(clean)
+    for condition in invalidation_conditions[:1]:
+        clean = str(condition).replace("_", " ").lower()
+        if clean and clean not in [item.lower() for item in wait_conditions]:
+            wait_conditions.append(clean)
+
+    if dominant_side in {"BULLISH", "BEARISH"}:
+        selected_state = _title_state(selected.get("structure_state", ""))
+        if selected_state:
+            current_side_condition = fresh_structure_condition(dominant_side)
+            opposite_side_condition = fresh_structure_condition(opposing_side)
+            if dominant_side == "BULLISH" and current_side_condition not in bullish_validation:
+                bullish_validation.append(current_side_condition)
+            if dominant_side == "BEARISH" and current_side_condition not in bearish_validation:
+                bearish_validation.append(current_side_condition)
+            if dominant_side == "BULLISH" and opposite_side_condition not in bearish_validation:
+                bearish_validation.append(opposite_side_condition)
+            if dominant_side == "BEARISH" and opposite_side_condition not in bullish_validation:
+                bullish_validation.append(opposite_side_condition)
+
+    bullish_validation = _dedupe_conditions(bullish_validation)[:4]
+    bearish_validation = _dedupe_conditions(bearish_validation)[:4]
+    wait_conditions = _dedupe_conditions(wait_conditions)[:4]
     return {
         "bullish_validation": bullish_validation,
         "bearish_validation": bearish_validation,
         "wait_conditions": wait_conditions,
     }
+
+
+def _dedupe_conditions(items: list[str]) -> list[str]:
+    seen = set()
+    deduped = []
+    for item in items:
+        text = " ".join(str(item or "").strip().split())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(text)
+    return deduped
 
 
 def compact_multi_timeframe_summary(snapshot: dict[str, Any]) -> str:
@@ -892,6 +1011,14 @@ def _enriched_label(
 
 
 def _primary_structure_signal(labels: list[dict[str, Any]]) -> dict[str, Any]:
+    def side_strength(label: dict[str, Any]) -> float:
+        return sum(
+            candidate["effective_score"]
+            for candidate in labels
+            if candidate["direction"] == label["direction"]
+            and candidate["family"] in STRUCTURE_PRIORITY
+        )
+
     directional_structure = [
         label for label in labels if label["family"] in {"BOS", "CHOCH"}
     ]
@@ -901,6 +1028,7 @@ def _primary_structure_signal(labels: list[dict[str, Any]]) -> dict[str, Any]:
             key=lambda label: (
                 _timestamp_sort_key(label.get("timestamp", "")),
                 1 if label["family"] == "CHOCH" else 0,
+                side_strength(label),
                 label["effective_score"],
             ),
         )

@@ -106,6 +106,22 @@ h3 {
 .ohlc-value {
     white-space: nowrap;
 }
+.candle-summary-cell {
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.028);
+    padding: 0.28rem 0.38rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.candle-summary-cell.bullish {
+    border-color: rgba(46, 160, 67, 0.45);
+    box-shadow: inset 2px 0 0 rgba(46, 160, 67, 0.50);
+}
+.candle-summary-cell.bearish {
+    border-color: rgba(248, 81, 73, 0.45);
+    box-shadow: inset 2px 0 0 rgba(248, 81, 73, 0.50);
+}
 .label-chip {
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 8px;
@@ -165,6 +181,38 @@ h3 {
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.035);
+}
+.agent-purpose-banner {
+    border: 1px solid rgba(56, 139, 253, 0.28);
+    border-radius: 8px;
+    background: rgba(56, 139, 253, 0.07);
+    padding: 0.62rem 0.72rem;
+    margin: 0.48rem 0 0.55rem;
+}
+.agent-purpose-title {
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.2;
+}
+.agent-purpose-copy {
+    font-size: 11px;
+    line-height: 1.35;
+    opacity: 0.82;
+    margin-top: 0.15rem;
+}
+.agent-purpose-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.18rem 0.55rem;
+    margin-top: 0.42rem;
+    font-size: 10px;
+    line-height: 1.25;
+    opacity: 0.92;
+}
+@media (max-width: 760px) {
+    .agent-purpose-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 .agent-summary-card {
     min-height: 52px;
@@ -303,6 +351,33 @@ h3 {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+.confidence-attribution {
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+    padding: 0.4rem 0.5rem;
+    margin: 0.22rem 0 0.48rem;
+}
+.confidence-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+    padding: 0.12rem 0;
+}
+.confidence-row span {
+    opacity: 0.82;
+}
+.confidence-row strong {
+    font-size: 11px;
+    white-space: nowrap;
+}
+.confidence-final {
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    margin-top: 0.25rem;
+    padding-top: 0.3rem;
+    font-weight: 800;
 }
 .decision-grid {
     display: grid;

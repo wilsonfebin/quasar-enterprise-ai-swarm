@@ -255,7 +255,7 @@ def ingest_twelvedata_forex():
     }
 
 
-def backfill_twelvedata_forex(days=30, chunk_days=3, dry_run=False):
+def backfill_twelvedata_forex(days=30, chunk_days=3, dry_run=False, refresh_structure=True):
     if not os.getenv("TWELVEDATA_API_KEY", ""):
         message = "TWELVEDATA_API_KEY is not configured; TwelveData backfill skipped"
         append_log("forex.log", message)
@@ -334,7 +334,9 @@ def backfill_twelvedata_forex(days=30, chunk_days=3, dry_run=False):
             cursor = chunk_end
 
         market_structure = (
-            None if dry_run else compact_market_structure_result(refresh_market_structure())
+            None
+            if dry_run or not refresh_structure
+            else compact_market_structure_result(refresh_market_structure())
         )
     except Exception as exc:
         message = f"TwelveData backfill failed: {exc}"
@@ -376,7 +378,7 @@ def backfill_twelvedata_forex(days=30, chunk_days=3, dry_run=False):
     }
 
 
-def backfill_zerodha_mcx(days=60, chunk_days=5, dry_run=False):
+def backfill_zerodha_mcx(days=60, chunk_days=5, dry_run=False, refresh_structure=True):
     try:
         client = ZerodhaClient()
         client.ensure_credentials()
@@ -472,7 +474,9 @@ def backfill_zerodha_mcx(days=60, chunk_days=5, dry_run=False):
             cursor = chunk_end
 
         market_structure = (
-            None if dry_run else compact_market_structure_result(refresh_market_structure())
+            None
+            if dry_run or not refresh_structure
+            else compact_market_structure_result(refresh_market_structure())
         )
     except ZerodhaApiError as exc:
         action_hint = "Verify Zerodha API key/access token and Kite historical data permissions."

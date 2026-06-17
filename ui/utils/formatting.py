@@ -87,7 +87,7 @@ def market_session_text(market_type, timestamp):
 
     if market_type == "MCX":
         ist_time = parsed.astimezone(TIMEZONE_OPTIONS["IST"])
-        if ist_time.weekday() < 5 and 9 <= ist_time.hour < 23:
+        if ist_time.weekday() < 5 and 9 <= ist_time.hour < 24:
             return "MCX Active"
         return "MCX Closed"
 

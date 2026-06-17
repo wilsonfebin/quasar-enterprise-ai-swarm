@@ -1,4 +1,5 @@
 import html
+import re
 import time
 from datetime import datetime
 
@@ -402,6 +403,147 @@ def compact_directional_confidence(direction: str, value) -> str:
     return f"{label}: {percent}" if percent != "Waiting" else percent
 
 
+def percent_value(value, default=None):
+    text = str(value or "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+    if match:
+        return int(round(float(match.group(1))))
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if numeric <= 1:
+        numeric *= 100
+    return int(round(numeric))
+
+
+def unit_value(value, default: float = 0.0) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if numeric > 1:
+        numeric /= 100
+    return max(0.0, min(numeric, 1.0))
+
+
+def confidence_attribution(decision: dict[str, object]) -> dict[str, object]:
+    intelligence = decision.get("multi_timeframe")
+    if not isinstance(intelligence, dict) or not intelligence:
+        return {"rows": [], "final": percent_value(decision.get("structure_confidence"))}
+
+    metrics = intelligence.get("metrics") if isinstance(intelligence.get("metrics"), dict) else {}
+    alignment = intelligence.get("alignment") if isinstance(intelligence.get("alignment"), dict) else {}
+    hierarchy = (
+        intelligence.get("timeframe_hierarchy")
+        if isinstance(intelligence.get("timeframe_hierarchy"), dict)
+        else {}
+    )
+    scenarios = intelligence.get("scenarios") if isinstance(intelligence.get("scenarios"), dict) else {}
+    memory = intelligence.get("memory") if isinstance(intelligence.get("memory"), dict) else {}
+    evolution = intelligence.get("evolution") if isinstance(intelligence.get("evolution"), dict) else {}
+
+    final_confidence = (
+        percent_value(decision.get("structure_confidence"))
+        or percent_value(metrics.get("structure_confidence"))
+        or percent_value(intelligence.get("structure_confidence"))
+        or percent_value(alignment.get("alignment_score"))
+        or 0
+    )
+
+    aligned = alignment.get("aligned_timeframes") or []
+    conflicting = alignment.get("conflicting_timeframes") or []
+    total_timeframes = max(1, len(aligned) + len(conflicting))
+    hierarchy_conflict = str(hierarchy.get("hierarchy_conflict") or "").upper()
+    if hierarchy_conflict == "LOW":
+        hierarchy_factor = 1.0
+    elif hierarchy_conflict == "MEDIUM":
+        hierarchy_factor = 0.65
+    elif hierarchy_conflict == "HIGH":
+        hierarchy_factor = 0.25
+    else:
+        hierarchy_factor = len(aligned) / total_timeframes
+
+    primary = scenarios.get("primary_scenario") if isinstance(scenarios.get("primary_scenario"), dict) else {}
+    secondary = scenarios.get("secondary_scenario") if isinstance(scenarios.get("secondary_scenario"), dict) else {}
+    primary_probability = percent_value(primary.get("probability"), 0) or 0
+    secondary_probability = percent_value(secondary.get("probability"), 0) or 0
+    scenario_factor = max(0.0, min((primary_probability - secondary_probability) / 50, 1.0))
+
+    memory_status = str(memory.get("status") or "").lower()
+    if evolution.get("has_previous"):
+        timeframe_changes = evolution.get("timeframe_changes") or []
+        regime_changed = bool((evolution.get("regime_change") or {}).get("changed"))
+        decision_changed = bool((evolution.get("decision_change") or {}).get("changed"))
+        persistence_factor = 0.45 if timeframe_changes or regime_changed or decision_changed else 1.0
+    elif memory_status in {"recorded", "duplicate_skipped"}:
+        persistence_factor = 0.65
+    else:
+        persistence_factor = 0.35
+
+    agreement_factor = unit_value(alignment.get("alignment_score") or intelligence.get("alignment_score"))
+    conflict_level = str(alignment.get("conflict_level") or decision.get("conflict_level") or "").upper()
+    conflict_factor = {"LOW": 0.0, "MEDIUM": 0.5, "HIGH": 1.0}.get(conflict_level, 0.25)
+
+    raw_rows = [
+        ("Hierarchy Alignment", 30 * hierarchy_factor),
+        ("Scenario Dominance", 25 * scenario_factor),
+        ("Structure Persistence", 20 * persistence_factor),
+        ("Multi-Timeframe Agreement", 25 * agreement_factor),
+    ]
+    penalty = int(round(15 * conflict_factor))
+    available_positive = max(0, final_confidence + penalty)
+    raw_total = sum(score for _, score in raw_rows)
+    if raw_total <= 0:
+        contributions = [0 for _ in raw_rows]
+    else:
+        contributions = [int(round((score / raw_total) * available_positive)) for _, score in raw_rows]
+
+    adjustment = available_positive - sum(contributions)
+    if contributions and adjustment:
+        strongest_index = max(range(len(raw_rows)), key=lambda index: raw_rows[index][1])
+        contributions[strongest_index] += adjustment
+
+    return {
+        "rows": [
+            {"label": label, "value": value}
+            for (label, _), value in zip(raw_rows, contributions)
+        ]
+        + [{"label": "Conflict Penalty", "value": -penalty}],
+        "final": final_confidence,
+    }
+
+
+def render_confidence_attribution(decision: dict[str, object]) -> str:
+    attribution = confidence_attribution(decision)
+    rows = attribution.get("rows", [])
+    if not rows:
+        final = attribution.get("final")
+        return (
+            '<div class="decision-label">Confidence Attribution</div>'
+            '<div class="confidence-attribution">'
+            '<div class="confidence-row"><span>Confidence source</span><strong>Final review output</strong></div>'
+            f'<div class="confidence-final">Final Confidence: {html.escape(str(final) + "%" if final is not None else "Unavailable")}</div>'
+            "</div>"
+        )
+    row_markup = "".join(
+        (
+            '<div class="confidence-row">'
+            f'<span>{html.escape(item["label"])}</span>'
+            f'<strong>{html.escape(("+" if item["value"] >= 0 else "-") + str(abs(int(item["value"]))) + "%")}</strong>'
+            "</div>"
+        )
+        for item in rows
+    )
+    return (
+        '<div class="decision-label">Confidence Attribution</div>'
+        '<div class="confidence-attribution">'
+        f"{row_markup}"
+        f'<div class="confidence-final">Final Confidence: {html.escape(str(attribution.get("final", 0)))}%</div>'
+        "</div>"
+    )
+
+
 def alignment_label(value) -> str:
     try:
         score = float(value)
@@ -655,25 +797,69 @@ def render_structure_evolution(evolution: dict):
             return
         regime = evolution.get("regime_change", {})
         decision = evolution.get("decision_change", {})
+        confidence = evolution.get("confidence_change", {})
         timeframe_changes = evolution.get("timeframe_changes", [])
+        changed_lines = []
+        if regime.get("changed"):
+            changed_lines.append(
+                "Regime moved from "
+                f"{sanitize_advisory_text(str(regime.get('previous', '')).replace('_', ' ').title())} "
+                "to "
+                f"{sanitize_advisory_text(str(regime.get('current', '')).replace('_', ' ').title())}."
+            )
+        if decision.get("changed"):
+            changed_lines.append(
+                "Decision state moved from "
+                f"{sanitize_advisory_text(decision.get('previous'))} to "
+                f"{sanitize_advisory_text(decision.get('current'))}."
+            )
         if timeframe_changes:
+            changed_lines.extend(
+                [
+                    (
+                        f"{str(item.get('timeframe', ''))} reviewed state moved from "
+                        f"{sanitize_advisory_text(str(item.get('previous_state', '')).replace('_', ' ').title())} to "
+                        f"{sanitize_advisory_text(str(item.get('current_state', '')).replace('_', ' ').title())}."
+                    )
+                    for item in timeframe_changes[:5]
+                ]
+            )
+        delta = confidence.get("delta")
+        try:
+            delta_value = float(delta)
+        except (TypeError, ValueError):
+            delta_value = 0.0
+        if abs(delta_value) >= 0.01:
+            direction = "strengthened" if delta_value > 0 else "weakened"
+            changed_lines.append(
+                f"Structure confidence {direction} by {abs(delta_value) * 100:.0f}%."
+            )
+        if changed_lines:
             changed_items = "".join(
-                (
-                    f"<li>{html.escape(str(item.get('timeframe', '')))} reviewed state moved from "
-                    f"{html.escape(sanitize_advisory_text(str(item.get('previous_state', '')).replace('_', ' ').title()))} to "
-                    f"{html.escape(sanitize_advisory_text(str(item.get('current_state', '')).replace('_', ' ').title()))}</li>"
-                )
-                for item in timeframe_changes[:5]
+                f"<li>{html.escape(line)}</li>" for line in changed_lines
             )
         else:
-            changed_items = "<li>No material structure change detected.</li>"
+            changed_items = (
+                "<li>No material structure, regime, decision, or confidence change detected.</li>"
+            )
         raw_reason = str(evolution.get("summary", ""))
         reason = sanitize_advisory_text(raw_reason)
         if "No timeframe structure state changed" in raw_reason:
-            reason = (
-                "No major multi-timeframe structure change was detected since the previous review. "
-                "Confidence and alignment remain below confirmation threshold."
+            current_state = sanitize_advisory_text(decision.get("current"))
+            current_regime = sanitize_advisory_text(
+                str(regime.get("current", "")).replace("_", " ").title()
             )
+            if changed_lines:
+                reason = (
+                    "The latest review changed outside the timeframe chain, so the evolution "
+                    "is being driven by regime, decision, or confidence movement."
+                )
+            else:
+                reason = (
+                    "The latest reviewed state remains "
+                    f"{current_state or 'unchanged'} / {current_regime or 'unchanged'}; "
+                    "no material movement was detected across the tracked evolution fields."
+                )
         st.markdown(
             (
                 '<div class="decision-card">'
@@ -731,6 +917,7 @@ def render_final_decision_card(decision: dict[str, object]):
             "</div>"
             '<div class="decision-label">Executive Summary</div>'
             f'<div>{html.escape(executive_summary)}</div>'
+            f"{render_confidence_attribution(decision)}"
             '<div class="decision-label">Dominant Hypothesis</div>'
             f'<div>{html.escape(dominant_hypothesis or "Unavailable")}</div>'
             '<div class="decision-label">Alternative Hypothesis</div>'
@@ -957,6 +1144,25 @@ def render_agent_monitor():
             st.session_state.get("quasar_workflow_running")
             and not st.session_state.get("final_review_completed")
         )
+        st.markdown(
+            (
+                '<div class="agent-purpose-banner">'
+                '<div class="agent-purpose-title">Agent Swarm Review</div>'
+                '<div class="agent-purpose-copy">'
+                "Transforms raw market structure into an advisory assessment using:"
+                "</div>"
+                '<div class="agent-purpose-grid">'
+                "<span>✓ Multi-Timeframe Intelligence</span>"
+                "<span>✓ Scenario Analysis</span>"
+                "<span>✓ Hierarchy Analysis</span>"
+                "<span>✓ Market Memory</span>"
+                "<span>✓ Governance Validation</span>"
+                "<span>✓ Specialist Review</span>"
+                "</div>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
         st.button(
             "Get Specialist Analysis",
             key="run_quasar_band_workflow_button_v2",
@@ -1003,6 +1209,7 @@ def render_agent_monitor():
                 mtf_alignment.get("conflict_level", "Waiting")
             ).title()
         elif final_gate_complete:
+            decision["multi_timeframe"] = selected_preview.get("multi_timeframe", {})
             decision["structure_confidence"] = (
                 selected_preview.get("summary_confidence")
                 or decision.get("structure_confidence")

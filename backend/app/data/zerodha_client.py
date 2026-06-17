@@ -29,6 +29,7 @@ class ZerodhaApiError(RuntimeError):
 
 class ZerodhaClient:
     base_url = "https://api.kite.trade"
+    exchange_timezone = timezone(timedelta(hours=5, minutes=30))
 
     def __init__(self, api_key=None, access_token=None):
         self.api_key = api_key or os.getenv("ZERODHA_API_KEY", "")
@@ -165,9 +166,11 @@ class ZerodhaClient:
         )
         token = resolved["instrument_token"]
         fetched_at = datetime.now(timezone.utc)
+        exchange_start = start_at.astimezone(self.exchange_timezone)
+        exchange_end = end_at.astimezone(self.exchange_timezone)
         params = {
-            "from": start_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "to": end_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            "from": exchange_start.strftime("%Y-%m-%d %H:%M:%S"),
+            "to": exchange_end.strftime("%Y-%m-%d %H:%M:%S"),
             "continuous": 0,
             "oi": 0,
         }
@@ -182,7 +185,7 @@ class ZerodhaClient:
         for row in rows:
             ts = datetime.fromisoformat(str(row[0]))
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=self.exchange_timezone)
             ts = ts.astimezone(timezone.utc)
             if ts > fetched_at + timedelta(minutes=2):
                 rejected_future += 1

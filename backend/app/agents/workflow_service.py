@@ -1,6 +1,6 @@
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.agents.band_client import BandClient, record_band_debug_response, utc_now_iso
@@ -1978,9 +1978,14 @@ class WorkflowService:
 
     def _market_session(self, market_type: str) -> str:
         now = datetime.now(timezone.utc)
-        minutes = now.hour * 60 + now.minute
         if market_type == "MCX":
-            return "MCX Active" if 210 <= minutes <= 1080 else "MCX Closed"
+            ist_now = now.astimezone(timezone(timedelta(hours=5, minutes=30)))
+            return (
+                "MCX Active"
+                if ist_now.weekday() < 5 and 9 <= ist_now.hour < 24
+                else "MCX Closed"
+            )
+        minutes = now.hour * 60 + now.minute
         if now.weekday() >= 5:
             return "Forex Off Hours"
         if 0 <= minutes < 420:

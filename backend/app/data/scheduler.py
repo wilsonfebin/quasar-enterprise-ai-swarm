@@ -5,8 +5,12 @@ from typing import Any
 
 from app.data.ingestion_service import (
     append_log,
+    backfill_twelvedata_forex,
+    backfill_zerodha_mcx,
+    compact_market_structure_result,
     ingest_twelvedata_forex,
     ingest_zerodha_mcx,
+    refresh_market_structure,
     twelvedata_symbol_forex,
     zerodha_mcx_instrument,
 )
@@ -81,6 +85,27 @@ ZERODHA_INGESTION_STATE: dict[str, Any] = {
 
 _zerodha_scheduler_task: asyncio.Task | None = None
 
+MISSING_CANDLE_FILL_STATE: dict[str, Any] = {
+    "running": False,
+    "enabled": True,
+    "interval_seconds": 300,
+    "lookback_days": 1,
+    "last_run_at": "",
+    "next_run_at": "",
+    "last_success_at": "",
+    "last_status": "stopped",
+    "last_error": "",
+    "forex_status": "",
+    "mcx_status": "",
+    "forex_inserted": 0,
+    "mcx_inserted": 0,
+    "structure_refreshed": False,
+    "success_count": 0,
+    "failure_count": 0,
+}
+
+_missing_candle_fill_task: asyncio.Task | None = None
+
 
 def append_mcx_log(message: str) -> None:
     append_log("mcx_live.log", message)
@@ -117,6 +142,27 @@ def _zerodha_env_interval() -> int:
         return 60
 
 
+def _missing_candle_fill_enabled() -> bool:
+    return os.getenv("MISSING_CANDLE_FILL_ENABLED", "true").lower() == "true"
+
+
+def _missing_candle_fill_interval() -> int:
+    try:
+        return max(
+            60,
+            int(os.getenv("MISSING_CANDLE_FILL_INTERVAL_SECONDS", "300")),
+        )
+    except ValueError:
+        return 300
+
+
+def _missing_candle_fill_days() -> int:
+    try:
+        return max(1, min(int(os.getenv("MISSING_CANDLE_FILL_DAYS", "1")), 7))
+    except ValueError:
+        return 1
+
+
 def _forex_market_open(now: datetime | None = None) -> bool:
     current = now or _utc_now()
     return current.weekday() < 5
@@ -125,7 +171,7 @@ def _forex_market_open(now: datetime | None = None) -> bool:
 def _mcx_market_open(now: datetime | None = None) -> bool:
     ist = timezone(timedelta(hours=5, minutes=30))
     current = (now or _utc_now()).astimezone(ist)
-    return current.weekday() < 5 and 9 <= current.hour < 23
+    return current.weekday() < 5 and 9 <= current.hour < 24
 
 
 def _stale_warning(last_timestamp: str, market_open: bool, provider_name: str) -> str:
@@ -233,6 +279,10 @@ def _zerodha_task_alive() -> bool:
     return _zerodha_scheduler_task is not None and not _zerodha_scheduler_task.done()
 
 
+def _missing_candle_fill_alive() -> bool:
+    return _missing_candle_fill_task is not None and not _missing_candle_fill_task.done()
+
+
 def get_twelvedata_ingestion_status() -> dict[str, Any]:
     _sync_env_state()
     worker_alive = _task_alive()
@@ -291,6 +341,24 @@ def get_zerodha_ingestion_status() -> dict[str, Any]:
         "market_session": "open"
         if ZERODHA_INGESTION_STATE.get("market_open")
         else "closed",
+    }
+
+
+def get_missing_candle_fill_status() -> dict[str, Any]:
+    worker_alive = _missing_candle_fill_alive()
+    MISSING_CANDLE_FILL_STATE.update(
+        {
+            "enabled": _missing_candle_fill_enabled()
+            or MISSING_CANDLE_FILL_STATE.get("running", False),
+            "interval_seconds": _missing_candle_fill_interval(),
+            "lookback_days": _missing_candle_fill_days(),
+        }
+    )
+    return {
+        **MISSING_CANDLE_FILL_STATE,
+        "worker_alive": worker_alive,
+        "task_alive": worker_alive,
+        "worker_status": "running" if worker_alive else "stopped",
     }
 
 
@@ -537,6 +605,95 @@ def run_zerodha_ingest_once() -> dict[str, Any]:
         }
 
 
+def run_missing_candle_fill_once() -> dict[str, Any]:
+    now = _utc_now()
+    interval = _missing_candle_fill_interval()
+    days = _missing_candle_fill_days()
+    MISSING_CANDLE_FILL_STATE.update(
+        {
+            "interval_seconds": interval,
+            "lookback_days": days,
+            "last_run_at": _iso(now),
+            "next_run_at": _iso(now + timedelta(seconds=interval)),
+            "last_error": "",
+            "structure_refreshed": False,
+        }
+    )
+    append_log(
+        "backend.log",
+        f"Missing candle fill started interval={interval}s lookback_days={days}",
+    )
+
+    forex_result: dict[str, Any] = {"status": "not_run", "total_inserted": 0}
+    mcx_result: dict[str, Any] = {"status": "not_run", "total_inserted": 0}
+    errors: list[str] = []
+
+    try:
+        forex_result = backfill_twelvedata_forex(
+            days=days,
+            chunk_days=1,
+            dry_run=False,
+            refresh_structure=False,
+        )
+    except Exception as exc:
+        errors.append(f"Forex fill failed: {exc}")
+
+    try:
+        mcx_result = backfill_zerodha_mcx(
+            days=days,
+            chunk_days=1,
+            dry_run=False,
+            refresh_structure=False,
+        )
+    except Exception as exc:
+        errors.append(f"MCX fill failed: {exc}")
+
+    forex_inserted = int(forex_result.get("total_inserted") or 0)
+    mcx_inserted = int(mcx_result.get("total_inserted") or 0)
+    structure_result = None
+    if forex_inserted or mcx_inserted:
+        try:
+            structure_result = compact_market_structure_result(refresh_market_structure())
+            MISSING_CANDLE_FILL_STATE["structure_refreshed"] = True
+        except Exception as exc:
+            errors.append(f"Market structure refresh failed: {exc}")
+
+    if errors:
+        MISSING_CANDLE_FILL_STATE["failure_count"] += 1
+        MISSING_CANDLE_FILL_STATE["last_status"] = "partial_failure"
+        MISSING_CANDLE_FILL_STATE["last_error"] = "; ".join(errors)
+    else:
+        MISSING_CANDLE_FILL_STATE["success_count"] += 1
+        MISSING_CANDLE_FILL_STATE["last_success_at"] = _iso(_utc_now())
+        MISSING_CANDLE_FILL_STATE["last_status"] = "success"
+
+    MISSING_CANDLE_FILL_STATE.update(
+        {
+            "forex_status": forex_result.get("status", ""),
+            "mcx_status": mcx_result.get("status", ""),
+            "forex_inserted": forex_inserted,
+            "mcx_inserted": mcx_inserted,
+        }
+    )
+    append_log(
+        "backend.log",
+        (
+            "Missing candle fill completed "
+            f"forex_status={MISSING_CANDLE_FILL_STATE['forex_status']} "
+            f"forex_inserted={forex_inserted} "
+            f"mcx_status={MISSING_CANDLE_FILL_STATE['mcx_status']} "
+            f"mcx_inserted={mcx_inserted} "
+            f"structure_refreshed={str(MISSING_CANDLE_FILL_STATE['structure_refreshed']).lower()}"
+        ),
+    )
+    return {
+        "scheduler": get_missing_candle_fill_status(),
+        "forex": forex_result,
+        "mcx": mcx_result,
+        "market_structure": structure_result,
+    }
+
+
 async def _scheduler_loop() -> None:
     append_log("forex.log", "TwelveData scheduler started")
     append_log("backend.log", "TwelveData scheduler started")
@@ -609,6 +766,26 @@ async def _zerodha_scheduler_loop() -> None:
             ZERODHA_INGESTION_STATE["last_status"] = "stopped"
 
 
+async def _missing_candle_fill_loop() -> None:
+    append_log("backend.log", "Missing candle fill scheduler started")
+    MISSING_CANDLE_FILL_STATE["running"] = True
+    try:
+        while True:
+            await asyncio.to_thread(run_missing_candle_fill_once)
+            await asyncio.sleep(_missing_candle_fill_interval())
+    except asyncio.CancelledError:
+        append_log("backend.log", "Missing candle fill scheduler stopped")
+        raise
+    finally:
+        MISSING_CANDLE_FILL_STATE["running"] = False
+        MISSING_CANDLE_FILL_STATE["next_run_at"] = ""
+        if MISSING_CANDLE_FILL_STATE["last_status"] not in {
+            "success",
+            "partial_failure",
+        }:
+            MISSING_CANDLE_FILL_STATE["last_status"] = "stopped"
+
+
 def start_zerodha_scheduler(force: bool = False) -> dict[str, Any]:
     global _zerodha_scheduler_task
     _sync_zerodha_env_state()
@@ -628,6 +805,28 @@ def start_zerodha_scheduler(force: bool = False) -> dict[str, Any]:
         }
     )
     return get_zerodha_ingestion_status()
+
+
+def start_missing_candle_fill_scheduler(force: bool = False) -> dict[str, Any]:
+    global _missing_candle_fill_task
+    if not force and not _missing_candle_fill_enabled():
+        MISSING_CANDLE_FILL_STATE.update({"running": False, "last_status": "stopped"})
+        return get_missing_candle_fill_status()
+    if _missing_candle_fill_alive():
+        MISSING_CANDLE_FILL_STATE["running"] = True
+        return get_missing_candle_fill_status()
+    _missing_candle_fill_task = asyncio.create_task(_missing_candle_fill_loop())
+    MISSING_CANDLE_FILL_STATE.update(
+        {
+            "running": True,
+            "enabled": True if force else _missing_candle_fill_enabled(),
+            "last_status": "starting",
+            "interval_seconds": _missing_candle_fill_interval(),
+            "lookback_days": _missing_candle_fill_days(),
+            "next_run_at": _iso(_utc_now()),
+        }
+    )
+    return get_missing_candle_fill_status()
 
 
 async def stop_zerodha_scheduler() -> dict[str, Any]:
@@ -666,3 +865,22 @@ async def stop_twelvedata_scheduler() -> dict[str, Any]:
         }
     )
     return get_twelvedata_ingestion_status()
+
+
+async def stop_missing_candle_fill_scheduler() -> dict[str, Any]:
+    global _missing_candle_fill_task
+    if _missing_candle_fill_alive():
+        _missing_candle_fill_task.cancel()
+        try:
+            await _missing_candle_fill_task
+        except asyncio.CancelledError:
+            pass
+    _missing_candle_fill_task = None
+    MISSING_CANDLE_FILL_STATE.update(
+        {
+            "running": False,
+            "next_run_at": "",
+            "last_status": "stopped",
+        }
+    )
+    return get_missing_candle_fill_status()

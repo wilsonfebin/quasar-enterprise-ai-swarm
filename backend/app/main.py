@@ -10,8 +10,10 @@ from app.api.smc_routes import router as smc_router
 from app.api.submission_routes import router as submission_router
 from app.data.ingestion_service import append_log, refresh_market_structure
 from app.data.scheduler import (
+    start_missing_candle_fill_scheduler,
     start_twelvedata_scheduler,
     start_zerodha_scheduler,
+    stop_missing_candle_fill_scheduler,
     stop_twelvedata_scheduler,
     stop_zerodha_scheduler,
 )
@@ -66,10 +68,12 @@ async def startup_services():
 
     start_twelvedata_scheduler()
     start_zerodha_scheduler()
+    start_missing_candle_fill_scheduler()
 
 
 @app.on_event("shutdown")
 async def shutdown_background_tasks():
+    await stop_missing_candle_fill_scheduler()
     await stop_twelvedata_scheduler()
     await stop_zerodha_scheduler()
 

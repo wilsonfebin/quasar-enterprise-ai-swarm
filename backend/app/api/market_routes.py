@@ -12,17 +12,22 @@ from app.data.ingestion_service import (
     zerodha_mcx_instrument,
 )
 from app.data.scheduler import (
+    get_missing_candle_fill_status,
     get_zerodha_ingestion_status,
     get_twelvedata_ingestion_status,
+    run_missing_candle_fill_once,
     run_zerodha_ingest_once,
     run_twelvedata_ingest_once,
+    start_missing_candle_fill_scheduler,
     start_twelvedata_scheduler,
     start_zerodha_scheduler,
+    stop_missing_candle_fill_scheduler,
     stop_zerodha_scheduler,
     stop_twelvedata_scheduler,
 )
 from app.db import (
     DatabaseUnavailable,
+    fetch_candle_count,
     fetch_candle_timestamps,
     fetch_latest_candle_by_source,
     fetch_latest_market_snapshot,
@@ -46,7 +51,7 @@ def is_mcx_market_open(now=None):
     current = (now or datetime.now(timezone.utc)).astimezone(
         timezone(timedelta(hours=5, minutes=30))
     )
-    return current.weekday() < 5 and 9 <= current.hour < 23
+    return current.weekday() < 5 and 9 <= current.hour < 24
 
 
 def is_market_open(market_type, now=None):
@@ -72,7 +77,7 @@ def expected_1m_candles(market_type, start, end):
         end = end.replace(second=0, microsecond=0)
         while cursor < end:
             local = cursor.astimezone(ist)
-            if local.weekday() < 5 and 9 <= local.hour < 23:
+            if local.weekday() < 5 and 9 <= local.hour < 24:
                 total += 1
             cursor += timedelta(minutes=1)
         return total
@@ -264,14 +269,16 @@ def latest_market_data(timeframe: str = Query("1m")):
 
 @router.get("/candles")
 def market_candles(
-    market_type: str = Query("MCX"),
+    market_type: str | None = Query(None),
+    market: str | None = Query(None),
     instrument: str = Query("NATURALGAS"),
     timeframe: str = Query("1m"),
     limit: int = Query(50, ge=1, le=500),
 ):
+    normalized_market_type = (market_type or market or "MCX").upper()
     try:
         candles = fetch_market_candles(
-            market_type=market_type.upper(),
+            market_type=normalized_market_type,
             instrument=instrument.upper(),
             timeframe=timeframe,
             limit=limit,
@@ -285,7 +292,7 @@ def market_candles(
         return {"status": "DB", "candles": candles}
     except DatabaseUnavailable:
         latest = fallback_latest_market_data()
-        key = "mcx" if market_type.upper() == "MCX" else "forex"
+        key = "mcx" if normalized_market_type == "MCX" else "forex"
         fallback = latest.get(key)
         if not fallback:
             return {"status": "MOCK_FALLBACK_DB_UNAVAILABLE", "candles": []}
@@ -323,8 +330,14 @@ def market_candle_health(
             timeframe,
             since,
         )
+        db_total = fetch_candle_count(
+            normalized_market,
+            normalized_instrument,
+            timeframe,
+        )
     except DatabaseUnavailable:
         timestamps = []
+        db_total = 0
 
     first = timestamps[0] if timestamps else None
     last = timestamps[-1] if timestamps else None
@@ -348,6 +361,7 @@ def market_candle_health(
         "first_candle": first.isoformat() if first else "",
         "last_candle": last.isoformat() if last else "",
         "total_candles": total,
+        "db_total_candles": db_total,
         "expected_candles": expected,
         "missing_candles": missing,
         "coverage_percent": coverage,
@@ -629,7 +643,11 @@ def market_ingestion_status():
                 else "stopped",
             }
         )
-    return {"twelvedata": state, "zerodha": zerodha_state}
+    return {
+        "twelvedata": state,
+        "zerodha": zerodha_state,
+        "missing_candle_fill": get_missing_candle_fill_status(),
+    }
 
 
 @router.post("/ingestion/start")
@@ -660,6 +678,21 @@ async def market_mcx_ingestion_stop():
 @router.post("/mcx-ingestion/run-once")
 def market_mcx_ingestion_run_once():
     return run_zerodha_ingest_once()
+
+
+@router.post("/missing-candle-fill/start")
+async def market_missing_candle_fill_start():
+    return {"missing_candle_fill": start_missing_candle_fill_scheduler(force=True)}
+
+
+@router.post("/missing-candle-fill/stop")
+async def market_missing_candle_fill_stop():
+    return {"missing_candle_fill": await stop_missing_candle_fill_scheduler()}
+
+
+@router.post("/missing-candle-fill/run-once")
+def market_missing_candle_fill_run_once():
+    return run_missing_candle_fill_once()
 
 
 @router.post("/ingest/zerodha")

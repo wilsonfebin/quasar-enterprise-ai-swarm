@@ -334,8 +334,8 @@ def fetch_latest_market_snapshot(timeframe="1m"):
                         WHEN source = 'AGG_1M' THEN 1
                         ELSE 2
                     END,
-                    inserted_at DESC NULLS LAST,
                     ts DESC,
+                    inserted_at DESC NULLS LAST,
                     id DESC
                 """,
                 (timeframe, timeframe),
@@ -374,8 +374,8 @@ def fetch_market_candles(market_type, instrument, timeframe, limit=50):
                         WHEN source = 'AGG_1M' THEN 1
                         ELSE 2
                     END,
-                    inserted_at DESC NULLS LAST,
                     ts DESC,
+                    inserted_at DESC NULLS LAST,
                     id DESC
                 LIMIT %s
                 """,
@@ -396,7 +396,7 @@ def fetch_latest_candle_by_source(market_type, instrument, timeframe, source):
                     AND instrument = %s
                     AND timeframe = %s
                     AND source = %s
-                ORDER BY inserted_at DESC NULLS LAST, ts DESC, id DESC
+                ORDER BY ts DESC, inserted_at DESC NULLS LAST, id DESC
                 LIMIT 1
                 """,
                 (market_type, instrument, timeframe, source),
@@ -421,6 +421,23 @@ def fetch_candle_timestamps(market_type, instrument, timeframe, since):
                 (market_type, instrument, timeframe, since),
             )
             return [row["ts"] for row in cursor.fetchall()]
+
+
+def fetch_candle_count(market_type, instrument, timeframe):
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM market_candles
+                WHERE market_type = %s
+                    AND instrument = %s
+                    AND timeframe = %s
+                """,
+                (market_type, instrument, timeframe),
+            )
+            row = cursor.fetchone()
+            return int(row["total"] or 0) if row else 0
 
 
 def fetch_smc_labels(market_type, instrument, timeframe, limit=50, connection=None):
