@@ -136,6 +136,17 @@ def chart_axis_labels(chart_times):
     return labels
 
 
+def chart_tick_indices(chart_times, max_ticks=7):
+    if len(chart_times) <= max_ticks:
+        return list(range(len(chart_times)))
+    step = max(1, len(chart_times) // max_ticks)
+    ticks = list(range(0, len(chart_times), step))
+    last_index = len(chart_times) - 1
+    if last_index not in ticks:
+        ticks.append(last_index)
+    return ticks
+
+
 def render_candlestick_chart(
     candle_rows,
     market_type,
@@ -154,12 +165,15 @@ def render_candlestick_chart(
         chart_datetime(row["timestamp"], timezone_name, timeframe)
         for row in chart_rows
     ]
-    chart_labels = chart_axis_labels(chart_times)
+    chart_x = list(range(len(chart_rows)))
+    tick_values = chart_tick_indices(chart_times)
+    all_labels = chart_axis_labels(chart_times)
+    tick_labels = [all_labels[index] for index in tick_values]
     date_label = chart_date_label(chart_times, timezone_name)
     fig = go.Figure(
         data=[
             go.Candlestick(
-                x=chart_labels,
+                x=chart_x,
                 open=[row["open"] for row in chart_rows],
                 high=[row["high"] for row in chart_rows],
                 low=[row["low"] for row in chart_rows],
@@ -180,7 +194,7 @@ def render_candlestick_chart(
         },
         template="plotly_dark",
         height=320,
-        margin={"l": 8, "r": 8, "t": 34, "b": 20},
+        margin={"l": 8, "r": 8, "t": 34, "b": 44},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(255,255,255,0.025)",
         showlegend=False,
@@ -189,9 +203,17 @@ def render_candlestick_chart(
     fig.update_xaxes(
         showgrid=False,
         tickfont={"size": 10},
-        title_text="Time",
+        title={
+            "text": "Time",
+            "font": {"size": 10},
+            "standoff": 14,
+        },
         type="category",
-        nticks=6,
+        tickmode="array",
+        tickvals=tick_values,
+        ticktext=tick_labels,
+        tickangle=0,
+        automargin=True,
     )
     fig.update_yaxes(
         showgrid=True,
@@ -232,7 +254,13 @@ def cached_chart_candles(market_type, instrument, timeframe, limit=100):
         except Exception:
             pass
 
-    response = market_candles(market_type, instrument, timeframe, limit=limit)
+    response = market_candles(
+        market_type,
+        instrument,
+        timeframe,
+        limit=limit,
+        closed_only=True,
+    )
     if "error" in response and cached:
         cached["response"]["refresh_warning"] = response["error"]
         return cached["response"], False, cached["fetched_at"]
@@ -385,7 +413,7 @@ def render_market_card(title, market_type, instrument, timezone_name):
             horizontal=True,
         )
         st.caption(
-            "Chart timeframe controls visual context only. Specialist review uses multi-timeframe intelligence."
+            "Chart timeframe controls visual context only. Specialist review uses multi-timeframe intelligence. Charts show closed candles only."
         )
         refresh_col, zoom_out_col, zoom_in_col, refresh_meta_col = st.columns([1.2, 0.35, 0.35, 3])
         with refresh_col:
@@ -467,6 +495,14 @@ def render_market_card(title, market_type, instrument, timezone_name):
         )
         if candles.get("refresh_warning"):
             st.caption(f"Using cached candles. Latest refresh failed: {candles['refresh_warning']}")
+        validation = candles.get("validation") if isinstance(candles, dict) else {}
+        if isinstance(validation, dict) and (
+            validation.get("duplicate_timestamp_count", 0)
+            or validation.get("misaligned_timestamp_count", 0)
+        ):
+            st.caption(
+                "Chart data validation warning: duplicate or misaligned candle timestamps were detected."
+            )
         render_candlestick_chart(
             candle_rows,
             market_type,

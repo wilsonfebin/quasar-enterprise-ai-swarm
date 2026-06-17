@@ -2,6 +2,9 @@ from app.db import get_connection
 
 SUPPORTED_AGGREGATE_TIMEFRAMES = ("3m", "5m", "15m", "1H", "4H")
 MIN_SOURCE_CANDLES = {
+    "3m": 3,
+    "5m": 5,
+    "15m": 15,
     "1H": 60,
     "4H": 240,
 }
@@ -14,6 +17,16 @@ def _interval_for_timeframe(timeframe):
 
     minutes = int(timeframe.removesuffix("m"))
     return f"{minutes} minutes"
+
+
+def _source_priority_sql():
+    return """
+        CASE
+            WHEN source IN ('TWELVEDATA', 'ZERODHA') THEN 0
+            WHEN source = 'AGG_1M' THEN 1
+            ELSE 2
+        END
+    """
 
 
 def aggregate_1m_candles():
@@ -30,6 +43,23 @@ def aggregate_1m_candles():
             markets = cursor.fetchall()
 
             for market_type, instrument in markets:
+                cursor.execute(
+                    f"""
+                    SELECT source
+                    FROM market_candles
+                    WHERE market_type = %s
+                        AND instrument = %s
+                        AND timeframe = '1m'
+                    ORDER BY {_source_priority_sql()}, inserted_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (market_type, instrument),
+                )
+                source_row = cursor.fetchone()
+                source = source_row[0] if source_row else None
+                if not source:
+                    continue
+
                 for timeframe in SUPPORTED_AGGREGATE_TIMEFRAMES:
                     cursor.execute(
                         """
@@ -62,6 +92,8 @@ def aggregate_1m_candles():
                         WHERE market_type = %s
                             AND instrument = %s
                             AND timeframe = '1m'
+                            AND source = %s
+                            AND ts < time_bucket((%s)::interval, NOW())
                         GROUP BY instrument, market_type, bucket_ts
                         HAVING COUNT(*) >= %s
                         ORDER BY bucket_ts ASC
@@ -72,6 +104,8 @@ def aggregate_1m_candles():
                             _interval_for_timeframe(timeframe),
                             market_type,
                             instrument,
+                            source,
+                            _interval_for_timeframe(timeframe),
                             MIN_SOURCE_CANDLES.get(timeframe, 1),
                         ),
                     )

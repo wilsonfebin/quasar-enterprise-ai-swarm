@@ -1,85 +1,188 @@
 # Quasar Enterprise AI Delivery Swarm
 
-Band-powered multi-agent platform for regulated financial AI workflows.
+Quasar is an advisory-only enterprise market intelligence and governance system. It does not place trades, does not generate execution instructions, and does not produce buy/sell signals.
 
-## Current Status
+## Hackathon Track
 
-Phase 1 Complete
+Band of Agents Hackathon: Regulated and High-Stakes Systems
 
-### Features
+## Live Demo
 
-- FastAPI backend
-- Streamlit dashboard
-- TimescaleDB
-- Docker Compose
-- Mock MCX Intelligence
-- Mock Forex Intelligence
-- Agent Swarm Monitor
-- Log Viewer
-- DB-backed candle and SMC label APIs
+Production deployment:
 
-## Run
+https://quasar.quasarlabs.in
 
-docker compose up --build -d
+Current verified state:
 
-UI:
-http://localhost:8601
+- AWS deployed
+- HTTPS enabled with custom domain
+- Streamlit UI live
+- FastAPI backend live
+- TimescaleDB running
+- Readiness score: 100
+- Readiness state: READY
+- Safety status: ADVISORY_ONLY
+- Band specialist workflow persists responses
+- Governance evidence and decision audit trail available
 
-Backend:
-http://localhost:8001/docs
+## Problem Statement
 
-## Environment Variables
+Financial market tools often expose raw indicators, candle values, or structure labels without explaining whether the evidence is fresh, aligned, persistent, auditable, or suitable for high-stakes review. This creates a gap between market data and enterprise-grade decision governance.
 
-Copy `.env.example` to `.env` and populate credentials.
+Quasar addresses that gap by turning live market structure into reviewed, advisory-only intelligence with specialist reasoning, evidence tracking, audit stages, and deployment readiness visibility.
 
-```bash
-docker compose up --build -d
-```
+## Solution Overview
 
-## Specialist Persistence Verification
+Quasar combines live MCX and Forex market data, TimescaleDB storage, market-structure intelligence, multi-timeframe analysis, scenario reasoning, hierarchy evaluation, market memory, and Band specialist review.
 
-After Band credentials are configured and specialist agents are present in the
-Band chat, send a mentioned workflow request in Band:
+The result is a reviewed advisory briefing rather than a raw technical-label dashboard. The system explains the current decision state, confidence attribution, dominant and alternative hypotheses, validation conditions, and governance evidence without producing execution instructions.
+
+## Why Band Agents
+
+Band agents are used as specialist reviewers rather than generic chat responders. Each specialist contributes a distinct review layer:
+
+- Requirement Specialist: defines the market question being evaluated.
+- Market Intelligence Specialist: compares dominant and alternative market theses.
+- System Readiness Specialist: reviews freshness, session state, and evidence quality.
+- Risk Governance Specialist: reviews confidence, conflict, and validation risk.
+- Delivery Planning Specialist: identifies the validation focus required next.
+- Final Review Specialist: produces the executive advisory assessment.
+
+This workflow demonstrates how specialized agents can transform raw intelligence artifacts into an auditable high-stakes review process.
+
+## Architecture Overview
+
+Quasar uses live ingestion workers, TimescaleDB, FastAPI, Streamlit, and Band specialist orchestration.
+
+Core intelligence flow:
+
+Market Data Providers -> Ingestion Workers -> TimescaleDB -> SMC Engine -> Multi-Timeframe Intelligence -> Scenario Engine -> Hierarchy Engine -> Market Memory -> Governance Evidence -> Band Specialist Review -> Decision Audit Trail -> Streamlit UI
+
+See [docs/architecture.md](docs/architecture.md) for Mermaid diagrams.
+
+## Core Features
+
+- Live MCX NATURALGAS and Forex XAUUSD intelligence panels.
+- Plotly candlestick charts with compact OHLC summaries.
+- Timeframe controls for visual chart context.
+- Multi-timeframe market intelligence snapshot.
+- Scenario engine and hierarchy engine outputs.
+- Market memory and structure evolution tracking.
+- Agent Swarm Review powered by Band specialists.
+- Final Advisory Assessment with confidence attribution.
+- Validation conditions and structure evolution audit sections.
+- System Audit and Governance Console.
+- Submission readiness endpoint and audit proof.
+- Persistent specialist responses after workflow completion.
+- Advisory-only safety posture throughout the UI and API output.
+
+## Safety Constraints
+
+Quasar is intentionally advisory-only.
+
+- No order placement.
+- No broker execution.
+- No buy/sell signals.
+- No entry, exit, target, or stop-loss instructions.
+- No automated trading recommendations.
+- Market intelligence is presented as governance-reviewed advisory context only.
+
+## Demo Endpoints
+
+Production UI:
 
 ```text
-@quasar-remote-agent Run Quasar enterprise specialist review
+https://quasar.quasarlabs.in
 ```
 
-Then trigger the workflow from the backend:
+Local UI:
+
+```text
+http://localhost:8601
+```
+
+Local FastAPI docs:
+
+```text
+http://localhost:8001/docs
+```
+
+Readiness snapshot:
 
 ```bash
-curl -X POST "http://127.0.0.1:8001/agents/band/run-quasar-workflow?analysis_scope=MCX"
+curl "http://localhost:8001/submission/readiness?market=MCX&instrument=NATURALGAS"
 ```
 
-Inspect persisted specialist responses:
+Latest specialist responses:
 
 ```bash
-curl "http://127.0.0.1:8001/agents/specialists/latest?market=MCX&instrument=NATURALGAS"
-curl "http://127.0.0.1:8001/agents/specialists/history?market=MCX&instrument=NATURALGAS"
+curl "http://localhost:8001/agents/specialists/latest?market=MCX&instrument=NATURALGAS"
 ```
 
-Reset runtime state or restart the backend, then verify governance and audit
-fallback:
+Governance evidence:
 
 ```bash
-curl -X POST http://127.0.0.1:8001/agents/workflow/reset
-curl http://127.0.0.1:8001/agents/governance/evidence
-curl "http://127.0.0.1:8001/agents/audit/decision-trace/latest?market=MCX&instrument=NATURALGAS"
+curl "http://localhost:8001/agents/governance/evidence"
 ```
 
-Before one completed Band specialist workflow exists, missing-response warnings
-are expected. After completion, persisted responses should remove false
-missing-response warnings and show `response_source: persisted` after runtime
-state is cleared.
-
-Automated local verification:
+Latest decision audit trail:
 
 ```bash
-python backend/scripts/verify_specialist_persistence.py --market MCX --instrument NATURALGAS --reset-runtime
+curl "http://localhost:8001/agents/audit/decision-trace/latest?market=MCX&instrument=NATURALGAS"
 ```
 
-To trigger the workflow as part of verification, use:
+## Deployment Instructions
+
+Local development:
 
 ```bash
-python backend/scripts/verify_specialist_persistence.py --market MCX --instrument NATURALGAS --run-workflow --reset-runtime
+docker compose up --build -d
 ```
+
+Then open:
+
+```text
+http://localhost:8601
+```
+
+Environment configuration:
+
+1. Copy `.env.example` to `.env` if available in the deployment environment.
+2. Populate provider credentials and deployment settings outside source control.
+3. Start the Docker Compose stack.
+4. Verify backend, Streamlit, and TimescaleDB health.
+5. Confirm readiness with the submission readiness endpoint.
+
+Production deployment currently runs on AWS behind HTTPS and the custom domain:
+
+```text
+https://quasar.quasarlabs.in
+```
+
+## Screenshots
+
+Screenshot references are listed in [docs/screenshots.md](docs/screenshots.md).
+
+Expected assets:
+
+- `docs/assets/live-intelligence.png`
+- `docs/assets/agent-swarm-review.png`
+- `docs/assets/final-advisory-assessment.png`
+- `docs/assets/audit-console.png`
+
+## Demo Script
+
+See [docs/demo_script.md](docs/demo_script.md) for a 3-5 minute judge-facing walkthrough.
+
+## Submission Write-up
+
+See [docs/submission_writeup.md](docs/submission_writeup.md) for the hackathon submission narrative.
+
+## Known Limitations
+
+- The system is advisory-only and does not perform execution.
+- Live feed freshness depends on upstream market data provider availability and rate limits.
+- MCX and Forex market sessions differ, so candle availability can vary by instrument and time.
+- Specialist review is intentionally user-triggered to avoid presenting intermediate analysis as final review.
+- Screenshot files are referenced as placeholders until final demo captures are added.
+- The current submission package documents the production deployment state but does not expose secrets, credentials, or raw provider payloads.

@@ -31,9 +31,16 @@ def latest_market():
     return get_json("/market/latest")
 
 
-def market_candles(market_type: str, instrument: str, timeframe: str, limit: int = 20):
+def market_candles(
+    market_type: str,
+    instrument: str,
+    timeframe: str,
+    limit: int = 20,
+    closed_only: bool = False,
+):
+    closed_only_value = "true" if closed_only else "false"
     return get_json(
-        f"/market/candles?market_type={market_type}&instrument={instrument}&timeframe={timeframe}&limit={limit}"
+        f"/market/candles?market_type={market_type}&instrument={instrument}&timeframe={timeframe}&limit={limit}&closed_only={closed_only_value}"
     )
 
 

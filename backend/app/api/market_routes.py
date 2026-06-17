@@ -39,7 +39,7 @@ from app.intelligence.multi_timeframe_engine import (
 )
 
 router = APIRouter()
-HIGHER_TIMEFRAMES = {"1H", "4H"}
+HIGHER_TIMEFRAMES = {"3m", "5m", "15m", "1H", "4H"}
 
 
 def is_forex_market_open(now=None):
@@ -274,22 +274,33 @@ def market_candles(
     instrument: str = Query("NATURALGAS"),
     timeframe: str = Query("1m"),
     limit: int = Query(50, ge=1, le=500),
+    closed_only: bool = Query(False),
 ):
     normalized_market_type = (market_type or market or "MCX").upper()
     try:
-        candles = fetch_market_candles(
+        result = fetch_market_candles(
             market_type=normalized_market_type,
             instrument=instrument.upper(),
             timeframe=timeframe,
             limit=limit,
+            closed_only=closed_only,
+            with_validation=True,
         )
+        candles = result.get("candles", [])
         if not candles and timeframe in HIGHER_TIMEFRAMES:
             return {
                 "status": "EMPTY",
                 "message": "Insufficient candles for selected timeframe",
                 "candles": [],
+                "closed_only": closed_only,
+                "validation": result.get("validation", {}),
             }
-        return {"status": "DB", "candles": candles}
+        return {
+            "status": "DB",
+            "candles": candles,
+            "closed_only": closed_only,
+            "validation": result.get("validation", {}),
+        }
     except DatabaseUnavailable:
         latest = fallback_latest_market_data()
         key = "mcx" if normalized_market_type == "MCX" else "forex"

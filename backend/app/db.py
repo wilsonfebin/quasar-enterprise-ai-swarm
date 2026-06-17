@@ -7,6 +7,15 @@ from psycopg2.extras import Json, RealDictCursor, execute_values
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+TIMEFRAME_SECONDS = {
+    "1m": 60,
+    "3m": 180,
+    "5m": 300,
+    "15m": 900,
+    "1H": 3600,
+    "4H": 14400,
+}
+
 
 class DatabaseUnavailable(RuntimeError):
     pass
@@ -357,31 +366,138 @@ def fetch_latest_market_snapshot(timeframe="1m"):
             return snapshot
 
 
-def fetch_market_candles(market_type, instrument, timeframe, limit=50):
+def _timeframe_interval(timeframe):
+    seconds = TIMEFRAME_SECONDS.get(str(timeframe))
+    if not seconds:
+        return None
+    return timedelta(seconds=seconds)
+
+
+def _timeframe_is_aligned(value, timeframe):
+    interval_seconds = TIMEFRAME_SECONDS.get(str(timeframe))
+    if not interval_seconds or not value:
+        return True
+    timestamp = value
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    epoch_seconds = int(timestamp.astimezone(timezone.utc).timestamp())
+    return epoch_seconds % interval_seconds == 0
+
+
+def _candle_validation(rows, timeframe):
+    seen = set()
+    duplicate_count = 0
+    misaligned_count = 0
+    latest_timestamp = None
+
+    for row in rows:
+        timestamp = row.get("ts")
+        if timestamp in seen:
+            duplicate_count += 1
+        seen.add(timestamp)
+        if not _timeframe_is_aligned(timestamp, timeframe):
+            misaligned_count += 1
+        if latest_timestamp is None or (timestamp and timestamp > latest_timestamp):
+            latest_timestamp = timestamp
+
+    return {
+        "duplicate_timestamp_count": duplicate_count,
+        "misaligned_timestamp_count": misaligned_count,
+        "latest_timestamp": latest_timestamp.isoformat() if latest_timestamp else None,
+        "aligned_to_timeframe": misaligned_count == 0,
+        "unique_timestamps": duplicate_count == 0,
+    }
+
+
+def _duplicate_timestamp_count(cursor, market_type, instrument, timeframe, cutoff):
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS duplicate_groups
+        FROM (
+            SELECT ts
+            FROM market_candles
+            WHERE market_type = %s
+                AND instrument = %s
+                AND timeframe = %s
+                AND (%s::timestamptz IS NULL OR ts <= %s::timestamptz)
+            GROUP BY ts
+            HAVING COUNT(*) > 1
+        ) duplicates
+        """,
+        (market_type, instrument, timeframe, cutoff, cutoff),
+    )
+    row = cursor.fetchone()
+    if isinstance(row, dict):
+        return int(row.get("duplicate_groups") or 0)
+    return int(row[0] or 0)
+
+
+def fetch_market_candles(
+    market_type,
+    instrument,
+    timeframe,
+    limit=50,
+    closed_only=False,
+    with_validation=False,
+):
+    interval = _timeframe_interval(timeframe)
+    cutoff = None
+    if closed_only and interval:
+        cutoff = datetime.now(timezone.utc) - interval
+
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
+                WITH ranked_candles AS (
+                    SELECT DISTINCT ON (ts)
+                        id, instrument, market_type, source, timeframe, ts,
+                        open, high, low, close, volume, fetched_at, inserted_at
+                    FROM market_candles
+                    WHERE market_type = %s
+                        AND instrument = %s
+                        AND timeframe = %s
+                        AND (%s::timestamptz IS NULL OR ts <= %s::timestamptz)
+                    ORDER BY
+                        ts DESC,
+                        CASE
+                            WHEN source IN ('TWELVEDATA', 'ZERODHA') THEN 0
+                            WHEN source = 'AGG_1M' THEN 1
+                            ELSE 2
+                        END,
+                        inserted_at DESC NULLS LAST,
+                        id DESC
+                )
                 SELECT id, instrument, market_type, source, timeframe, ts,
                     open, high, low, close, volume, fetched_at, inserted_at
-                FROM market_candles
-                WHERE market_type = %s
-                    AND instrument = %s
-                    AND timeframe = %s
-                ORDER BY
-                    CASE
-                        WHEN source IN ('TWELVEDATA', 'ZERODHA') THEN 0
-                        WHEN source = 'AGG_1M' THEN 1
-                        ELSE 2
-                    END,
-                    ts DESC,
-                    inserted_at DESC NULLS LAST,
-                    id DESC
+                FROM ranked_candles
+                ORDER BY ts DESC, inserted_at DESC NULLS LAST, id DESC
                 LIMIT %s
                 """,
-                (market_type, instrument, timeframe, limit),
+                (market_type, instrument, timeframe, cutoff, cutoff, limit),
             )
-            return [format_candle(row) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            candles = [format_candle(row) for row in rows]
+            if not with_validation:
+                return candles
+            validation = _candle_validation(rows, timeframe)
+            db_duplicate_count = _duplicate_timestamp_count(
+                cursor,
+                market_type,
+                instrument,
+                timeframe,
+                cutoff,
+            )
+            return {
+                "candles": candles,
+                "validation": {
+                    **validation,
+                    "duplicate_timestamp_count": db_duplicate_count,
+                    "result_duplicate_timestamp_count": validation["duplicate_timestamp_count"],
+                    "closed_only": bool(closed_only),
+                    "latest_closed_cutoff": cutoff.isoformat() if cutoff else None,
+                },
+            }
 
 
 def fetch_latest_candle_by_source(market_type, instrument, timeframe, source):
