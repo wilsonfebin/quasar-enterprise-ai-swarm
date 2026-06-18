@@ -91,6 +91,8 @@ _zerodha_scheduler_task: asyncio.Task | None = None
 MISSING_CANDLE_FILL_STATE: dict[str, Any] = {
     "running": False,
     "enabled": True,
+    "forex_enabled": True,
+    "mcx_enabled": True,
     "interval_seconds": 300,
     "lookback_days": 1,
     "last_run_at": "",
@@ -154,6 +156,14 @@ def _zerodha_env_interval() -> int:
 
 def _missing_candle_fill_enabled() -> bool:
     return os.getenv("MISSING_CANDLE_FILL_ENABLED", "true").lower() == "true"
+
+
+def _missing_candle_fill_forex_enabled() -> bool:
+    return os.getenv("MISSING_CANDLE_FILL_FOREX_ENABLED", "true").lower() == "true"
+
+
+def _missing_candle_fill_mcx_enabled() -> bool:
+    return os.getenv("MISSING_CANDLE_FILL_MCX_ENABLED", "true").lower() == "true"
 
 
 def _missing_candle_fill_interval() -> int:
@@ -438,6 +448,8 @@ def get_missing_candle_fill_status() -> dict[str, Any]:
         {
             "enabled": _missing_candle_fill_enabled()
             or MISSING_CANDLE_FILL_STATE.get("running", False),
+            "forex_enabled": _missing_candle_fill_forex_enabled(),
+            "mcx_enabled": _missing_candle_fill_mcx_enabled(),
             "interval_seconds": _missing_candle_fill_interval(),
             "lookback_days": _missing_candle_fill_days(),
         }
@@ -739,7 +751,11 @@ def run_missing_candle_fill_once() -> dict[str, Any]:
     mcx_result: dict[str, Any] = {"status": "not_run", "total_inserted": 0}
     errors: list[str] = []
 
-    if _twelvedata_rate_limit_active():
+    if not _missing_candle_fill_forex_enabled():
+        message = "Forex missing candle fill disabled by MISSING_CANDLE_FILL_FOREX_ENABLED"
+        forex_result = {"status": "disabled", "message": message, "total_inserted": 0}
+        append_log("backend.log", message)
+    elif _twelvedata_rate_limit_active():
         message = (
             "TwelveData rate limit active; skipping Forex missing candle fill "
             f"until {TWELVEDATA_INGESTION_STATE.get('rate_limit_until', '')}"
@@ -774,15 +790,20 @@ def run_missing_candle_fill_once() -> dict[str, Any]:
                 else:
                     errors.append(f"Forex fill failed: {exc}")
 
-    try:
-        mcx_result = backfill_zerodha_mcx(
-            days=days,
-            chunk_days=1,
-            dry_run=False,
-            refresh_structure=False,
-        )
-    except Exception as exc:
-        errors.append(f"MCX fill failed: {exc}")
+    if not _missing_candle_fill_mcx_enabled():
+        message = "MCX missing candle fill disabled by MISSING_CANDLE_FILL_MCX_ENABLED"
+        mcx_result = {"status": "disabled", "message": message, "total_inserted": 0}
+        append_log("backend.log", message)
+    else:
+        try:
+            mcx_result = backfill_zerodha_mcx(
+                days=days,
+                chunk_days=1,
+                dry_run=False,
+                refresh_structure=False,
+            )
+        except Exception as exc:
+            errors.append(f"MCX fill failed: {exc}")
 
     forex_inserted = int(forex_result.get("total_inserted") or 0)
     mcx_inserted = int(mcx_result.get("total_inserted") or 0)
