@@ -71,8 +71,7 @@ See [docs/architecture.md](docs/architecture.md) for Mermaid diagrams.
 - Agent Swarm Review powered by Band specialists.
 - Final Advisory Assessment with confidence attribution.
 - Validation conditions and structure evolution audit sections.
-- System Audit and Governance Console.
-- Submission readiness endpoint and audit proof.
+- System Audit, Governance Console and audit proof.
 - Persistent specialist responses after workflow completion.
 - Advisory-only safety posture throughout the UI and API output.
 
@@ -170,19 +169,38 @@ Expected assets:
 - `docs/assets/final-advisory-assessment.png`
 - `docs/assets/audit-console.png`
 
-## Demo Script
-
-See [docs/demo_script.md](docs/demo_script.md) for a 3-5 minute judge-facing walkthrough.
-
-## Submission Write-up
-
-See [docs/submission_writeup.md](docs/submission_writeup.md) for the hackathon submission narrative.
-
 ## Known Limitations
 
 - The system is advisory-only and does not perform execution.
 - Live feed freshness depends on upstream market data provider availability and rate limits.
 - MCX and Forex market sessions differ, so candle availability can vary by instrument and time.
 - Specialist review is intentionally user-triggered to avoid presenting intermediate analysis as final review.
-- Screenshot files are referenced as placeholders until final demo captures are added.
-- The current submission package documents the production deployment state but does not expose secrets, credentials, or raw provider payloads.
+- The current package documents the production deployment state but does not expose secrets, credentials, or raw provider payloads.
+
+## Future Roadmap
+
+1. Real-Time Streaming Intelligence
+
+- Replace polling-based refresh with WebSocket/SSE streaming.
+- Live candle updates directly from market feeds into charts.
+- Real-time agent review triggers on significant market structure changes.
+- Continuous governance monitoring and alerting.
+
+2. Enterprise Multi-Agent Orchestration
+
+- Expand from 6 specialists to domain-specific specialist swarms.
+- Portfolio Risk Agent, Compliance Agent, Scenario Stress Testing Agent, Market Regime Agent.
+- Cross-agent memory and long-term intelligence persistence.
+
+3. Institutional Governance & Explainability
+
+- Full audit replay capability for every decision.
+- Regulatory reporting and compliance packs.
+- Explainable confidence attribution with visual decision trees.
+
+4. Multi-Asset & Multi-Market Intelligence
+
+- Expand beyond XAUUSD and MCX NATURALGAS.
+- Equities, Commodities, Forex, Crypto, Fixed Income.
+- Cross-market correlation intelligence.
+- Global macro-event impact analysis across asset classes.

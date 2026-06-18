@@ -112,24 +112,3 @@ Production URL:
 ```text
 https://quasar.quasarlabs.in
 ```
-
-Demo flow:
-
-1. Show live MCX and Forex intelligence charts.
-2. Explain chart timeframe as visual context only.
-3. Run Agent Swarm Review.
-4. Review specialist cards.
-5. Review Final Advisory Assessment.
-6. Open Confidence Attribution.
-7. Navigate to System Audit and Governance Console.
-8. Show readiness score, governance evidence, and decision audit trail.
-9. Reinforce advisory-only safety mode.
-
-## Future Roadmap
-
-- Add final production screenshots to the documentation package.
-- Expand readiness proof across multiple instruments.
-- Add richer historical workflow comparison.
-- Add exportable audit packets for compliance review.
-- Improve governance evidence filtering and search.
-- Continue strengthening UI language sanitization for judge-facing demos.
