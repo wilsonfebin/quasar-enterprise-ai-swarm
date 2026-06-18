@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from app.data.ingestion_service import (
@@ -284,9 +285,50 @@ def _is_twelvedata_rate_limit(message: str) -> bool:
     return "429" in lowered or "too many requests" in lowered
 
 
+def _twelvedata_rate_limit_state_path() -> Path:
+    return Path(
+        os.getenv(
+            "TWELVEDATA_RATE_LIMIT_STATE_FILE",
+            "logs/twelvedata_rate_limit_until.txt",
+        )
+    )
+
+
+def _read_twelvedata_rate_limit_until() -> datetime | None:
+    try:
+        return _parse_iso(_twelvedata_rate_limit_state_path().read_text(encoding="utf-8").strip())
+    except OSError:
+        return None
+
+
+def _write_twelvedata_rate_limit_until(until: str) -> None:
+    try:
+        path = _twelvedata_rate_limit_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(until, encoding="utf-8")
+    except OSError as exc:
+        append_log("backend.log", f"TwelveData cooldown persistence skipped: {exc}")
+
+
+def _clear_twelvedata_rate_limit_until() -> None:
+    try:
+        _twelvedata_rate_limit_state_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _twelvedata_rate_limit_active(now: datetime | None = None) -> bool:
-    until = _parse_iso(str(TWELVEDATA_INGESTION_STATE.get("rate_limit_until") or ""))
-    return bool(until and until > (now or _utc_now()))
+    current = now or _utc_now()
+    state_until = _parse_iso(str(TWELVEDATA_INGESTION_STATE.get("rate_limit_until") or ""))
+    persisted_until = _read_twelvedata_rate_limit_until()
+    until_candidates = [value for value in (state_until, persisted_until) if value]
+    until = max(until_candidates) if until_candidates else None
+    if until and until > current:
+        TWELVEDATA_INGESTION_STATE["rate_limit_until"] = _iso(until)
+        return True
+    if persisted_until and persisted_until <= current:
+        _clear_twelvedata_rate_limit_until()
+    return False
 
 
 def _set_twelvedata_rate_limit(message: str, now: datetime | None = None) -> str:
@@ -296,6 +338,7 @@ def _set_twelvedata_rate_limit(message: str, now: datetime | None = None) -> str
     TWELVEDATA_INGESTION_STATE["rate_limit_until"] = _iso(until)
     TWELVEDATA_INGESTION_STATE["last_status"] = "rate_limited"
     TWELVEDATA_INGESTION_STATE["last_error"] = str(message or "TwelveData rate limit active")
+    _write_twelvedata_rate_limit_until(_iso(until))
     return _iso(until)
 
 
@@ -512,6 +555,7 @@ def run_twelvedata_ingest_once() -> dict[str, Any]:
             TWELVEDATA_INGESTION_STATE["last_success_at"] = _iso(_utc_now())
             TWELVEDATA_INGESTION_STATE["last_status"] = "success"
             TWELVEDATA_INGESTION_STATE["rate_limit_until"] = ""
+            _clear_twelvedata_rate_limit_until()
             append_log("forex.log", "TwelveData scheduler ingest success")
             append_log("backend.log", "TwelveData scheduler ingest success")
         elif status == "duplicate_skipped":
