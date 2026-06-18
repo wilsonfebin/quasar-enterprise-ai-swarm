@@ -22,6 +22,10 @@ from config import TIMEZONE_OPTIONS
 SECRET_PATTERN = re.compile(
     r"(?i)(api[_-]?key|access[_-]?token|authorization|password|secret|token)[\"']?\s*[:=]\s*[\"']?[^,\s\"']+"
 )
+LOG_PREFIX_PATTERN = re.compile(r"^\[(?P<timestamp>[^\]]+)\]\s*(?P<message>.*)$")
+INLINE_ISO_PATTERN = re.compile(
+    r"(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))"
+)
 
 SPECIALIST_ORDER = [
     "Requirement",
@@ -129,6 +133,34 @@ def safe_log_text(value: Any, limit: int = 500) -> str:
     return text[: max(0, limit - 1)].rstrip() + "..."
 
 
+def format_log_timestamp(value: str, timezone_name: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=TIMEZONE_OPTIONS["UTC"])
+        target_timezone = TIMEZONE_OPTIONS.get(timezone_name, TIMEZONE_OPTIONS["IST"])
+        return parsed.astimezone(target_timezone).strftime(f"%d %b %H:%M:%S {timezone_name}")
+    except ValueError:
+        return str(value)
+
+
+def format_log_line_timezone(line: Any, timezone_name: str) -> str:
+    text = str(line or "")
+    match = LOG_PREFIX_PATTERN.match(text)
+    if match:
+        timestamp = format_log_timestamp(match.group("timestamp"), timezone_name)
+        message = match.group("message")
+        message = INLINE_ISO_PATTERN.sub(
+            lambda item: format_log_timestamp(item.group("timestamp"), timezone_name),
+            message,
+        )
+        return f"[{timestamp}] {message}"
+    return INLINE_ISO_PATTERN.sub(
+        lambda item: format_log_timestamp(item.group("timestamp"), timezone_name),
+        text,
+    )
+
+
 def format_time(value: Any, timezone_name: str = "IST") -> str:
     text = str(value or "").strip()
     if not text:
@@ -170,13 +202,16 @@ def cached_log_lines(log_name: str) -> dict[str, Any]:
     return log_lines(log_name)
 
 
-def render_log_card(title: str, log_name: str, line_limit: int = 50) -> None:
+def render_log_card(title: str, log_name: str, timezone_name: str, line_limit: int = 50) -> None:
     st.write(title)
     log_data = cached_log_lines(log_name)
     lines = log_data.get("lines", []) if isinstance(log_data, dict) else []
     if not lines:
         lines = ["No raw log lines available."]
-    lines = [safe_log_text(line, 500) for line in lines[-line_limit:]]
+    lines = [
+        safe_log_text(format_log_line_timezone(line, timezone_name), 500)
+        for line in lines[-line_limit:]
+    ]
     padded_lines = lines + [""] * max(0, min(12, line_limit) - len(lines))
     escaped_log = html.escape("\n".join(padded_lines))
     st.markdown(
@@ -435,17 +470,20 @@ def render_decision_audit_trail(trace: dict[str, Any], timezone_name: str) -> No
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
-def render_raw_system_logs() -> None:
+def render_raw_system_logs(timezone_name: str) -> None:
     st.subheader("Raw System Logs")
-    st.caption("Developer logs are retained for auditability and capped to the latest 50 lines per source.")
+    st.caption(
+        f"Developer logs are retained for auditability and capped to the latest 50 lines per source. "
+        f"Visible timestamps are shown in {timezone_name}."
+    )
     with st.expander("MCX Logs", expanded=False):
-        render_log_card("MCX Logs", "mcx")
+        render_log_card("MCX Logs", "mcx", timezone_name)
     with st.expander("Forex Logs", expanded=False):
-        render_log_card("Forex Logs", "forex")
+        render_log_card("Forex Logs", "forex", timezone_name)
     with st.expander("Backend Logs", expanded=False):
-        render_log_card("Backend Logs", "backend")
+        render_log_card("Backend Logs", "backend", timezone_name)
     with st.expander("Agent Workflow Raw Logs", expanded=False):
-        render_log_card("Agent Workflow Raw Logs", "agent")
+        render_log_card("Agent Workflow Raw Logs", "agent", timezone_name)
 
 
 def render_enterprise_review_notes(readiness: dict[str, Any]) -> None:
@@ -494,6 +532,6 @@ def render_logs_page() -> None:
     st.divider()
     render_decision_audit_trail(trace, selected_timezone)
     st.divider()
-    render_raw_system_logs()
+    render_raw_system_logs(selected_timezone)
     st.divider()
     render_enterprise_review_notes(readiness)
