@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import plotly.graph_objects as go
 import streamlit as st
 
-from api_client import market_candles, smc_labels
+from api_client import feed_status, market_candles, smc_labels
 from config import TIMEFRAMES, TIMEZONE_OPTIONS
 from utils.formatting import (
     format_confidence,
@@ -71,6 +71,61 @@ def render_ohlc_row(latest):
                 ),
                 unsafe_allow_html=True,
             )
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def cached_feed_status():
+    return feed_status()
+
+
+def feed_state_for_market(market_type):
+    status = cached_feed_status()
+    if not isinstance(status, dict) or "error" in status:
+        return {}
+    key = "zerodha" if market_type == "MCX" else "twelvedata"
+    feed = status.get(key)
+    return feed if isinstance(feed, dict) else {}
+
+
+def feed_worker_alive(feed):
+    return bool(feed.get("worker_alive", feed.get("task_alive", False)))
+
+
+def feed_provider_error(feed):
+    return bool(feed.get("last_error")) and feed.get("last_status") in {
+        "failed",
+        "token_error",
+        "missing_credentials",
+        "no_data",
+    }
+
+
+def card_feed_status(candle_status, source, feed):
+    if not feed:
+        return status_badge(candle_status, source)
+    if feed.get("last_status") == "rate_limited":
+        return "🟡 Rate Limited"
+    if feed_provider_error(feed):
+        return "🟡 Feed Error"
+    if feed_worker_alive(feed):
+        return "🟢 Live Data"
+    return "🔴 Worker Stopped"
+
+
+def card_worker_badge(feed):
+    if not feed:
+        return "Worker Unknown"
+    if feed.get("last_status") == "rate_limited":
+        return "Worker Cooling Down"
+    return "Worker Running" if feed_worker_alive(feed) else "Worker Stopped"
+
+
+def card_session_text(market_type, timestamp, feed):
+    if feed and market_type == "MCX":
+        return "MCX Closed" if feed.get("market_closed") else "MCX Active"
+    if feed and market_type == "FOREX" and feed.get("market_closed"):
+        return "Forex Closed"
+    return market_session_text(market_type, timestamp)
 
 
 def timeframe_delta(timeframe):
@@ -459,6 +514,7 @@ def render_market_card(title, market_type, instrument, timezone_name):
             return
 
         latest = candle_rows[0]
+        feed_state = feed_state_for_market(market_type)
         visible_candles = min(
             chart_visible_candles(market_type, instrument, timeframe),
             len(candle_rows),
@@ -467,7 +523,9 @@ def render_market_card(title, market_type, instrument, timezone_name):
         updated_at = format_short_timestamp(latest_formed_timestamp, timezone_name)
         chart_updated_text = format_short_timestamp(chart_updated_at, timezone_name)
         data_age = format_freshness(latest["timestamp"], timezone_name)
-        session_text = market_session_text(market_type, latest_formed_timestamp)
+        session_text = card_session_text(market_type, latest_formed_timestamp, feed_state)
+        feed_status_text = card_feed_status(candles.get("status"), latest["source"], feed_state)
+        worker_text = card_worker_badge(feed_state)
         with refresh_meta_col:
             st.caption(
                 f"Auto-refresh: {CHART_REFRESH_SECONDS}s | "
@@ -481,12 +539,13 @@ def render_market_card(title, market_type, instrument, timezone_name):
                 '<div class="market-meta">'
                 f'<div class="market-instrument">{html.escape(latest["instrument"])}</div>'
                 '<div class="market-feed">'
-                f'{html.escape(status_badge(candles.get("status"), latest["source"]))}'
+                f'{html.escape(feed_status_text)}'
                 f' &bull; Source: {html.escape(readable_source(latest["source"], timeframe))}'
                 "</div>"
                 '<div class="meta-badges">'
                 f'<span class="meta-badge">Updated {html.escape(updated_at)}</span>'
                 f'<span class="meta-badge">Data Age {html.escape(data_age)}</span>'
+                f'<span class="meta-badge">{html.escape(worker_text)}</span>'
                 f'<span class="meta-badge">{html.escape(session_text)}</span>'
                 "</div>"
                 "</div>"
