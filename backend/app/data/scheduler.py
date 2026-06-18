@@ -14,6 +14,7 @@ from app.data.ingestion_service import (
     twelvedata_symbol_forex,
     zerodha_mcx_instrument,
 )
+from app.db import DatabaseUnavailable, fetch_latest_candle_by_source
 
 
 TWELVEDATA_INGESTION_STATE: dict[str, Any] = {
@@ -170,6 +171,52 @@ def _missing_candle_fill_days() -> int:
         return max(1, min(int(os.getenv("MISSING_CANDLE_FILL_DAYS", "1")), 7))
     except ValueError:
         return 1
+
+
+def _missing_candle_fill_stale_threshold_seconds() -> int:
+    try:
+        return max(
+            300,
+            int(os.getenv("MISSING_CANDLE_FILL_STALE_THRESHOLD_SECONDS", "900")),
+        )
+    except ValueError:
+        return 900
+
+
+def _latest_forex_candle_age_seconds(now: datetime | None = None) -> int | None:
+    try:
+        latest = fetch_latest_candle_by_source("FOREX", "XAUUSD", "1m", "TWELVEDATA")
+    except DatabaseUnavailable:
+        return None
+    if not latest:
+        return None
+    timestamp = _parse_iso(str(latest.get("timestamp") or ""))
+    if not timestamp:
+        return None
+    current = now or _utc_now()
+    return max(0, int((current - timestamp).total_seconds()))
+
+
+def _forex_backfill_needed(now: datetime | None = None) -> tuple[bool, str]:
+    age_seconds = _latest_forex_candle_age_seconds(now)
+    threshold = _missing_candle_fill_stale_threshold_seconds()
+    if age_seconds is None:
+        return True, "No latest TwelveData candle is available."
+    if age_seconds <= threshold:
+        return (
+            False,
+            (
+                "Latest TwelveData candle is fresh enough; skipping Forex backfill "
+                f"age_seconds={age_seconds} threshold_seconds={threshold}"
+            ),
+        )
+    return (
+        True,
+        (
+            "Latest TwelveData candle is stale; Forex backfill required "
+            f"age_seconds={age_seconds} threshold_seconds={threshold}"
+        ),
+    )
 
 
 def _forex_market_open(now: datetime | None = None) -> bool:
@@ -700,27 +747,32 @@ def run_missing_candle_fill_once() -> dict[str, Any]:
         forex_result = {"status": "rate_limited", "message": message, "total_inserted": 0}
         append_log("backend.log", message)
     else:
-        try:
-            forex_result = backfill_twelvedata_forex(
-                days=days,
-                chunk_days=1,
-                dry_run=False,
-                refresh_structure=False,
-            )
-            if _is_twelvedata_rate_limit(str(forex_result.get("message", ""))):
-                _set_twelvedata_rate_limit(str(forex_result.get("message", "")))
-                forex_result = {
-                    **forex_result,
-                    "status": "rate_limited",
-                    "total_inserted": int(forex_result.get("total_inserted") or 0),
-                }
-        except Exception as exc:
-            message = str(exc)
-            if _is_twelvedata_rate_limit(message):
-                _set_twelvedata_rate_limit(message)
-                forex_result = {"status": "rate_limited", "message": message, "total_inserted": 0}
-            else:
-                errors.append(f"Forex fill failed: {exc}")
+        needed, reason = _forex_backfill_needed(now)
+        append_log("backend.log", reason)
+        if not needed:
+            forex_result = {"status": "fresh_skipped", "message": reason, "total_inserted": 0}
+        else:
+            try:
+                forex_result = backfill_twelvedata_forex(
+                    days=days,
+                    chunk_days=1,
+                    dry_run=False,
+                    refresh_structure=False,
+                )
+                if _is_twelvedata_rate_limit(str(forex_result.get("message", ""))):
+                    _set_twelvedata_rate_limit(str(forex_result.get("message", "")))
+                    forex_result = {
+                        **forex_result,
+                        "status": "rate_limited",
+                        "total_inserted": int(forex_result.get("total_inserted") or 0),
+                    }
+            except Exception as exc:
+                message = str(exc)
+                if _is_twelvedata_rate_limit(message):
+                    _set_twelvedata_rate_limit(message)
+                    forex_result = {"status": "rate_limited", "message": message, "total_inserted": 0}
+                else:
+                    errors.append(f"Forex fill failed: {exc}")
 
     try:
         mcx_result = backfill_zerodha_mcx(
