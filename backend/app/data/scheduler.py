@@ -91,7 +91,7 @@ _zerodha_scheduler_task: asyncio.Task | None = None
 MISSING_CANDLE_FILL_STATE: dict[str, Any] = {
     "running": False,
     "enabled": True,
-    "forex_enabled": True,
+    "forex_enabled": False,
     "mcx_enabled": True,
     "interval_seconds": 300,
     "lookback_days": 1,
@@ -159,7 +159,7 @@ def _missing_candle_fill_enabled() -> bool:
 
 
 def _missing_candle_fill_forex_enabled() -> bool:
-    return os.getenv("MISSING_CANDLE_FILL_FOREX_ENABLED", "true").lower() == "true"
+    return os.getenv("MISSING_CANDLE_FILL_FOREX_ENABLED", "false").lower() == "true"
 
 
 def _missing_candle_fill_mcx_enabled() -> bool:
