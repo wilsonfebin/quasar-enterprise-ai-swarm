@@ -10,6 +10,7 @@ from app.data.zerodha_client import ZerodhaClient, ZerodhaCredentialsMissing
 from app.data.zerodha_client import ZerodhaApiError
 from app.data.candle_aggregator import aggregate_1m_candles
 from app.db import (
+    fetch_latest_candle_by_source,
     fetch_matching_market_candle,
     insert_market_candle,
     insert_market_candles_bulk,
@@ -176,7 +177,9 @@ def ingest_twelvedata_forex():
             "forex_live.log",
             f"TwelveData request symbol={requested_symbol} instrument=XAUUSD",
         )
-        candle = TwelveDataClient(symbol=requested_symbol).fetch_latest_forex_candle()
+        window_result = TwelveDataClient(symbol=requested_symbol).fetch_latest_forex_candles()
+        candles = window_result["candles"]
+        candle = candles[-1]
         provider = candle.get("provider", {})
         provider_query_symbol = provider.get("provider_query_symbol", requested_symbol)
         returned_symbol = provider.get("returned_symbol", requested_symbol)
@@ -193,6 +196,9 @@ def ingest_twelvedata_forex():
                 f"raw_datetime={raw_datetime or 'unknown'} "
                 f"timestamp_corrected={timestamp_corrected} "
                 f"correction_reason={timestamp_correction_reason or 'none'} "
+                f"returned={window_result.get('returned_count', 0)} "
+                f"accepted={window_result.get('accepted_count', 0)} "
+                f"outputsize={window_result.get('outputsize', 0)} "
                 "source=TWELVEDATA"
             ),
         )
@@ -204,16 +210,23 @@ def ingest_twelvedata_forex():
             )
             append_log("forex.log", correction_message)
             append_log("backend.log", correction_message)
-        save_result = save_ingested_candle(candle, skip_duplicates=True)
-        inserted = save_result["candle"]
-        if save_result["duplicate"]:
+        insert_result = insert_market_candles_bulk(
+            [normalize_candle(item) for item in candles]
+        )
+        latest = fetch_latest_candle_by_source("FOREX", "XAUUSD", "1m", "TWELVEDATA")
+        inserted = latest or normalize_candle(candle)
+        if insert_result["inserted_count"] == 0:
             append_log(
                 "forex.log",
-                f"TwelveData duplicate skipped timestamp={inserted['timestamp']}",
+                f"TwelveData duplicate skipped timestamp={inserted.get('timestamp') or inserted.get('ts')}",
             )
             append_log(
                 "forex_live.log",
-                f"TwelveData duplicate skipped timestamp={inserted['timestamp']}",
+                (
+                    "TwelveData duplicate window skipped "
+                    f"duplicates={insert_result['duplicate_count']} "
+                    f"latest_timestamp={inserted.get('timestamp') or inserted.get('ts')}"
+                ),
             )
             return {
                 "status": "duplicate_skipped",
@@ -225,6 +238,8 @@ def ingest_twelvedata_forex():
                 "timestamp_correction_reason": timestamp_correction_reason,
                 "inserted": None,
                 "existing": inserted,
+                "inserted_count": 0,
+                "duplicate_count": insert_result["duplicate_count"],
                 "market_structure": None,
             }
 
@@ -240,8 +255,23 @@ def ingest_twelvedata_forex():
         append_log("backend.log", message)
         return {"status": "error", "message": message}
 
-    append_log("forex_live.log", f"TwelveData Forex candle ingested id={inserted['id']}")
-    append_log("forex.log", f"TwelveData ingest success id={inserted['id']}")
+    append_log(
+        "forex_live.log",
+        (
+            "TwelveData Forex candle window ingested "
+            f"inserted={insert_result['inserted_count']} "
+            f"duplicates={insert_result['duplicate_count']} "
+            f"latest_id={inserted.get('id', '')}"
+        ),
+    )
+    append_log(
+        "forex.log",
+        (
+            "TwelveData ingest success "
+            f"inserted={insert_result['inserted_count']} "
+            f"latest_id={inserted.get('id', '')}"
+        ),
+    )
     return {
         "status": "ok",
         "source": "TWELVEDATA",
@@ -251,6 +281,8 @@ def ingest_twelvedata_forex():
         "timestamp_corrected": timestamp_corrected,
         "timestamp_correction_reason": timestamp_correction_reason,
         "inserted": inserted,
+        "inserted_count": insert_result["inserted_count"],
+        "duplicate_count": insert_result["duplicate_count"],
         "market_structure": market_structure,
     }
 

@@ -96,6 +96,109 @@ class TwelveDataClient:
             },
         }
 
+    def fetch_latest_forex_candles(
+        self,
+        instrument="XAUUSD",
+        symbol=None,
+        timeframe="1m",
+        outputsize=None,
+    ):
+        if not self.api_key:
+            raise TwelveDataCredentialsMissing("TWELVEDATA_API_KEY is not configured")
+        requested_symbol = symbol or self.symbol
+        api_symbol = self._provider_symbol(requested_symbol)
+        fetched_at = datetime.now(timezone.utc)
+        window = outputsize if outputsize is not None else int(
+            os.getenv("TWELVEDATA_LIVE_OUTPUTSIZE", "300")
+        )
+        window = max(1, min(int(window), 500))
+
+        params = urlencode(
+            {
+                "symbol": api_symbol,
+                "interval": "1min",
+                "outputsize": window,
+                "order": "ASC",
+                "timezone": "UTC",
+                "apikey": self.api_key,
+            }
+        )
+        with urlopen(f"{self.base_url}?{params}", timeout=15) as response:
+            payload = response.read().decode()
+
+        import json
+
+        data = json.loads(payload)
+        if data.get("status") == "error":
+            raise RuntimeError(data.get("message", "TwelveData returned an error"))
+
+        values = data.get("values") or []
+        if not values:
+            raise RuntimeError("TwelveData returned no candle values")
+
+        meta = data.get("meta") or {}
+        returned_symbol = (
+            meta.get("symbol")
+            or meta.get("currency_pair")
+            or meta.get("instrument")
+            or api_symbol
+        )
+        candles = []
+        rejected_future = 0
+        for value in values:
+            raw_datetime = value["datetime"]
+            ts = datetime.fromisoformat(raw_datetime)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.astimezone(timezone.utc)
+            timestamp_corrected = False
+            timestamp_correction_reason = ""
+            if ts > fetched_at + timedelta(minutes=2):
+                rejected_future += 1
+                timestamp_corrected = True
+                timestamp_correction_reason = "provider_timestamp_ahead_of_fetch_time"
+                continue
+            candles.append(
+                {
+                    "instrument": instrument,
+                    "market_type": "FOREX",
+                    "source": "TWELVEDATA",
+                    "timeframe": timeframe,
+                    "ts": ts,
+                    "fetched_at": fetched_at,
+                    "open": float(value["open"]),
+                    "high": float(value["high"]),
+                    "low": float(value["low"]),
+                    "close": float(value["close"]),
+                    "volume": float(value.get("volume") or 0),
+                    "provider": {
+                        "requested_symbol": requested_symbol,
+                        "provider_query_symbol": api_symbol,
+                        "returned_symbol": returned_symbol,
+                        "raw_datetime": raw_datetime,
+                        "timestamp_corrected": timestamp_corrected,
+                        "timestamp_correction_reason": timestamp_correction_reason,
+                        "exchange": meta.get("exchange"),
+                        "type": meta.get("type"),
+                    },
+                }
+            )
+
+        if not candles:
+            raise RuntimeError("TwelveData returned no usable candle values")
+
+        return {
+            "requested_symbol": requested_symbol,
+            "provider_query_symbol": api_symbol,
+            "returned_symbol": returned_symbol,
+            "fetched_at": fetched_at.isoformat(),
+            "outputsize": window,
+            "returned_count": len(values),
+            "accepted_count": len(candles),
+            "rejected_future_count": rejected_future,
+            "candles": candles,
+        }
+
     def fetch_forex_candles(
         self,
         start_at,
