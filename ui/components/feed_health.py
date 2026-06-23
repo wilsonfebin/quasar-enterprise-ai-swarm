@@ -26,6 +26,8 @@ def feed_provider_error(feed):
 
 
 def feed_worker_label(feed):
+    if feed.get("last_status") == "market_closed" or feed.get("waiting_for_next_session"):
+        return "🟡 Waiting for Session"
     if feed_provider_error(feed):
         return "🟡 Error"
     return "🟢 Running" if feed_worker_alive(feed) else "🔴 Stopped"
@@ -71,6 +73,8 @@ def render_feed_diagnostics(title, feed, health):
 
 
 def feed_status_label(configured, running, market_closed, provider_error):
+    if market_closed and running:
+        return "Waiting · Market Closed"
     if provider_error:
         return "Error · Provider Failure"
     if not configured:

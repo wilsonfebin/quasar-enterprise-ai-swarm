@@ -103,6 +103,8 @@ def feed_provider_error(feed):
 def card_feed_status(candle_status, source, feed):
     if not feed:
         return status_badge(candle_status, source)
+    if feed.get("last_status") == "market_closed" or feed.get("waiting_for_next_session"):
+        return "🟡 Market Closed"
     if feed.get("last_status") == "rate_limited":
         return "🟡 Rate Limited"
     if feed_provider_error(feed):
@@ -115,6 +117,8 @@ def card_feed_status(candle_status, source, feed):
 def card_worker_badge(feed):
     if not feed:
         return "Worker Unknown"
+    if feed.get("last_status") == "market_closed" or feed.get("waiting_for_next_session"):
+        return "Waiting for Session"
     if feed.get("last_status") == "rate_limited":
         return "Worker Cooling Down"
     return "Worker Running" if feed_worker_alive(feed) else "Worker Stopped"

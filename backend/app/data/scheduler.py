@@ -471,6 +471,9 @@ def _sync_zerodha_env_state() -> None:
 def get_zerodha_ingestion_status() -> dict[str, Any]:
     _sync_zerodha_env_state()
     worker_alive = _zerodha_task_alive()
+    worker_status = "running" if worker_alive else "stopped"
+    if worker_alive and ZERODHA_INGESTION_STATE.get("waiting_for_next_session"):
+        worker_status = "waiting_for_session"
     return {
         **ZERODHA_INGESTION_STATE,
         "worker_alive": worker_alive,
@@ -478,7 +481,7 @@ def get_zerodha_ingestion_status() -> dict[str, Any]:
         "last_tick": ZERODHA_INGESTION_STATE.get("last_run_at", ""),
         "last_candle": ZERODHA_INGESTION_STATE.get("exchange_candle_time", ""),
         "freshness": ZERODHA_INGESTION_STATE.get("freshness_label", ""),
-        "worker_status": "running" if worker_alive else "stopped",
+        "worker_status": worker_status,
         "market_session": "open"
         if ZERODHA_INGESTION_STATE.get("market_open")
         else "closed",
@@ -670,6 +673,21 @@ def run_zerodha_ingest_once() -> dict[str, Any]:
     if not ZERODHA_INGESTION_STATE["market_open"]:
         append_mcx_log("Zerodha market closed / waiting for next session")
         append_log("backend.log", "Zerodha market closed / waiting for next session")
+        ZERODHA_INGESTION_STATE.update(
+            {
+                "last_run_at": _iso(now),
+                "next_run_at": _iso(now + timedelta(seconds=_zerodha_env_interval())),
+                "last_status": "market_closed",
+                "last_error": "",
+            }
+        )
+        return {
+            "scheduler": get_zerodha_ingestion_status(),
+            "ingest_result": {
+                "status": "market_closed",
+                "message": "MCX market closed; waiting for next session",
+            },
+        }
     ZERODHA_INGESTION_STATE.update(
         {
             "last_run_at": _iso(now),
@@ -964,6 +982,7 @@ async def _zerodha_scheduler_loop() -> None:
             "missing_credentials",
             "token_error",
             "no_data",
+            "market_closed",
         }:
             ZERODHA_INGESTION_STATE["last_status"] = "stopped"
 
