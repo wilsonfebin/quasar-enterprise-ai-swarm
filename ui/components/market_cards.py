@@ -195,15 +195,17 @@ def chart_axis_labels(chart_times):
     return labels
 
 
-def chart_tick_indices(chart_times, max_ticks=7):
+def chart_tick_indices(chart_times, max_ticks=6):
     if len(chart_times) <= max_ticks:
         return list(range(len(chart_times)))
     step = max(1, len(chart_times) // max_ticks)
     ticks = list(range(0, len(chart_times), step))
     last_index = len(chart_times) - 1
+    min_gap = max(2, step // 2)
+    ticks = [index for index in ticks if last_index - index >= min_gap]
     if last_index not in ticks:
         ticks.append(last_index)
-    return ticks
+    return sorted(set(ticks))
 
 
 def render_candlestick_chart(
